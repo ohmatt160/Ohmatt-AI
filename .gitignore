@@ -1,0 +1,105 @@
+instance/
+
+tired.py
+ohma_tasks.db
+resources.py
+spec_tasks.db
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+svelte/
+var/
+wheels/
+*.egg-info/
+.installed.cgi
+*.egg
+pip-wheel-metadata/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+venv*/
+env*/
+ENV*/
+
+# Database
+*.db
+*.sqlite3
+*.db-journal
+migrations/
+
+# Flask
+instance/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# React/Next.js
+.next/
+out/
+
+# Build
+build/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# User-specific files
+.user.ini
+
+# Testing
+coverage/
+htmlcov/
+.pytest_cache/
+.tox/
+.coverage
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# SQLite
+*.sqlite
+*.pkl

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Messages</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f8f9fa;
+            padding: 30px;
+        }
+        
+        .message {
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        
+        .message:hover {
+            background: #f1f5ff;
+        }
+        
+        .unread {
+            font-weight: bold;
+            border-left: 5px solid #007bff;
+        }
+        
+        #login {
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="login">
+        <h2>Login</h2>
+        <input id="username" placeholder="Username" />
+        <input id="password" placeholder="Password" type="password" />
+        <button onclick="login()">Login</button>
+    </div>
+
+    <h2>Your Messages</h2>
+    <div id="messages"></div>
+
+    <script>
+        let token = "";
+
+        // Login to get JWT token
+        function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            fetch('http://127.0.0.1:5000/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username,
+                        password
+                    })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.access_token) {
+                        token = data.access_token;
+                        alert('Login successful!');
+                        loadMessages();
+                    } else {
+                        alert('Login failed!');
+                    }
+                });
+        }
+
+        // Fetch messages
+        function loadMessages() {
+            fetch('http://127.0.0.1:5000/messages', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                })
+                .then(res => res.json())
+                .then(data => {
+                    const container = document.getElementById('messages');
+                    container.innerHTML = "";
+
+                    // Handle both array or object formats
+                    const messages = Array.isArray(data) ? data : data.messages || [];
+
+                    if (messages.length === 0) {
+                        container.innerHTML = "<p>No messages found.</p>";
+                        return;
+                    }
+
+                    messages.forEach(msg => {
+                        const div = document.createElement('div');
+                        div.className = `message ${msg.is_read === false ? 'unread' : ''}`;
+                        div.innerHTML = `
+      <p><strong>From:</strong> ${msg.sender || 'Unknown'}</p>
+      <p>${msg.content}</p>
+      <small>${msg.timestamp}</small>
+    `;
+                        div.onclick = () => markAsRead(msg.id, div);
+                        container.appendChild(div);
+                    });
+                });
+
+        }
+
+        // Mark message as read
+        function markAsRead(id, element) {
+            fetch(`http://127.0.0.1:5000/messages/${id}/read`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                })
+                .then(res => res.json())
+                .then(data => {
+                    console.log(data.message);
+                    element.classList.remove('unread');
+                });
+        }
+    </script>
+</body>
+
+</html>
