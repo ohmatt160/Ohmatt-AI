@@ -1,58 +1,56 @@
 from datetime import datetime, timedelta
-from flask_cors import CORS
-from flask import request, jsonify, render_template
+from typing import Dict, Any, List
+
+import plaid
+from flask import request, jsonify, render_template, current_app
 from flask_jwt_extended import jwt_required, create_access_token, get_jwt_identity
-from plaid.model.country_code import CountryCode
-from plaid.model.link_token_create_request import LinkTokenCreateRequest
-from plaid.model.products import Products
+
 from sqlalchemy import create_engine
 from flask_restful import Resource, marshal_with, reqparse, fields
 
-from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy.sql.functions import user
 
-from model import User, Transaction, Activity,Messages, Tasks, app,api,Base,db, BankTransaction, BankAccount
+from config import plaid_client, configuration, logger
+from model import User, Transaction, Activity, Messages, Tasks, app, api, Base, db, BankTransaction, BankAccount, \
+    Country, Continent, Language, BankConnection
 
 from plaid.api import plaid_api
 from plaid.api_client import ApiClient
-from plaid.configuration import Configuration
 
 from utils import get_user_task_session, log_activity, generate_token, send_email, confirm_token, admin_required, \
-    process_new_transaction
-
-configuration = Configuration(
-    host="https://sandbox.plaid.com",
-    api_key={
-        "clientId": "6904bdc5aa4c2b0023d6da8d",
-        "secret": "46b9ceda54767660b4e59e0805c71e"
-    }
-)
-api_client = ApiClient(configuration)
-plaid_client = plaid_api.PlaidApi(api_client)
+    process_new_transaction, ProviderRegistry
 
 
+# Field definitions
+user_field = {
+    'id': fields.Integer,
+    'username': fields.String,
+    'email': fields.String,
+    'country_code': fields.String,
+    'language_code': fields.String,
+    'is_verified': fields.Boolean
+}
 
+country_field = {
+    'code': fields.String,
+    'name': fields.String,
+    'continent': fields.String,
+    'currency': fields.String,
+    'timezone': fields.String,
+    'language': fields.String,
+    'plaid_supported': fields.Boolean
+}
 
-CORS(app,resources={r"/*": {"origins":  ["http://localhost:3000", "http://127.0.0.1:3000"]}},
-    supports_credentials=True,
-    allow_headers=["Content-Type", "Authorization"],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# Looking to send emails in production? Check out our Email API/SMTP product!
-app.config['MAIL_SERVER']='sandbox.smtp.mailtrap.io'
-app.config['MAIL_PORT'] = 2525
-app.config['MAIL_USERNAME'] = 'd5c82933204588'
-app.config['MAIL_PASSWORD'] = '48a454b81a1e63'
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USE_SSL'] = False
-# set expiration in seconds (example: 24 hours)
-app.config['EMAIL_TOKEN_EXPIRATION'] = 24 * 60 * 60  # 86400 seconds
-SECRET_KEY = 'your-secret-key'
-JWT_SECRET_KEY = 'your-jwt-secret'
-app.config['SECRET_KEY'] = SECRET_KEY
-serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
+continent_field = {
+    'code': fields.String,
+    'name': fields.String
+}
 
+language_field = {
+    'code': fields.String,
+    'name': fields.String,
+    'native_name': fields.String
+}
 
 @app.route('/home')
 def home():
@@ -117,12 +115,6 @@ class TasksAPI(Resource):
             return {'message': f'failed! {e}'},500
 api.add_resource(TasksAPI, '/tasks')
 
-user_field={
-    'id':fields.Integer,
-    'username':fields.String,
-    'email':fields.String,
-    'password':fields.String,
-}
 
 class UserRegister(Resource):
     def post(self):
@@ -132,8 +124,25 @@ class UserRegister(Resource):
             if User.query.filter((User.username == data['username']) | (User.email == data['email'])).first():
                 return {"message": "Username or email already exists"}, 400
 
+                # Validate country
+                country = Country.query.filter_by(code=args['country_code'].upper()).first()
+                if not country:
+                    return {"message": "Invalid country code"}, 400
+
+                # Validate language
+                language = Language.query.filter_by(code=args['language_code'].lower()).first()
+                if not language:
+                    return {"message": "Invalid language code"}, 400
+
+                # Get continent
+                continent = Continent.query.filter_by(code=country.continent).first()
+
             db_name = f"{data['username']}_tasks.db"
-            new_user = User(username=data['username'], email=data['email'], db_name=db_name)
+            new_user = User(username=data['username'], email=data['email'], db_name=db_name,
+                country_code=country.code,
+                continent_code=continent.code if continent else None,
+                language_code=language.code,
+                timezone=data['timezone'])
             new_user.set_password(data['password'])
             db.session.add(new_user)
             db.session.commit()
@@ -145,15 +154,20 @@ class UserRegister(Resource):
             token = generate_token(data['email'])
             send_email(data['email'], "Verify Your Account", f"Your verification token: {token}")
             log_activity(new_user, "User registered")
-            return {"message": "User registered. Check your email for verification token."}, 201
+            return {"message": "User registered. Check your email for verification token.",
+                "user": {
+                    "username": new_user.username,
+                    "email": new_user.email,
+                    "country": country.code,
+                    "language": language.code,
+                    "timezone": new_user.timezone
+                }}, 201
 
         except Exception as e:
             return jsonify({'message': f'Error: {str(e)}' })
 api.add_resource(UserRegister, '/register')
 
 class VerifyAccount(Resource):
-
-
     def post(self):
         try:
             data = request.get_json()
@@ -183,18 +197,30 @@ class UserLogin(Resource):
             # user = User.query.filter_by(username=data['username']).first()
 
             user = User.query.filter_by(email=data['email']).first()
+
+            user_data = {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "country": user.country_code,
+                "language": user.language_code,
+                "timezone": user.timezone,
+                "is_admin": user.is_admin
+            }
+
             if user and user.check_password(data['password']):
                 if user.is_admin:
                     access_token = create_access_token(identity=user.username)
                     log_activity(user, "Admin login")
                     return {
                         "message": "Welcome Admin!",
+                        "user": user_data,
                         "access_token": access_token
                     }, 200
 
                 access_token = create_access_token(identity=user.username)  # or identity=user.id
                 log_activity(user, "User login")
-                return {'message': 'User login successfully', 'access_token': access_token}, 200
+                return {'message': 'User login successfully','user':user_data, 'access_token': access_token}, 200
             else:
                 if user:
                     log_activity(user, "User login failed")
@@ -224,8 +250,16 @@ class ProfileResource(Resource):
     @jwt_required()
     def get(self):
         current_user=get_jwt_identity()
+        user = User.query.filter_by(username=current_user).first()
         if not current_user:
             return {"message": "Unauthorized, no identity in token"}, 401
+
+            # Get user's country and language details
+        country = Country.query.filter_by(code=user.country_code).first() if user.country_code else None
+        language = Language.query.filter_by(code=user.language_code).first() if user.language_code else None
+
+
+
         # user=User.query.filter_by(username=current_user).first()
         current_identity = get_jwt_identity()
         user = User.query.filter_by(username=current_identity).first()
@@ -242,7 +276,25 @@ class ProfileResource(Resource):
             log_activity(user, "Task Log")
             return {"user": user.username, "tasks": result}, 200
 
-        return {'message': 'User login failed'}, 401
+        return jsonify({
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "country": {
+                    "code": user.country_code,
+                    "name": country.name if country else None,
+                    "currency": country.currency if country else None
+                } if country else None,
+                "language": {
+                    "code": user.language_code,
+                    "name": language.name if language else None
+                } if language else None,
+                "timezone": user.timezone,
+                "is_verified": user.is_verified,
+                "is_admin": user.is_admin
+            }
+        }), 200
     @jwt_required()
     def post(self):
         try:
@@ -611,6 +663,18 @@ class CreateLinkToken(Resource):
         if not user:
             return {"message": "User not found"}, 404
 
+        if not user.country_code:
+            return {"message": "User country not set"}, 400
+
+         # Check if Plaid supports user's country
+        country = Country.query.filter_by(code=user.country_code).first()
+        if not country or not country.plaid_supported:
+            return {
+                "message": f"Plaid not available in {user.country_code}. Please use alternative banking method."}, 400
+
+        api_client = ApiClient(configuration)
+        plaid_client = plaid_api.PlaidApi(api_client)
+
         try:
             response = plaid_client.link_token_create({
                 'user': {'client_user_id': str(user.id)},
@@ -633,10 +697,19 @@ class ExchangePublicToken(Resource):
         data = request.get_json()
         public_token = data.get('public_token')
 
+        if not public_token:
+            return {"message": "Public token is required"}, 400
+
         current_user = get_jwt_identity()
         user = User.query.filter_by(username=current_user).first()
         if not user:
             return {"message": "User not found"}, 404
+
+        if not user.country_code:
+            return {"message": "User country not set"}, 400
+
+        country = Country.query.filter_by(code=user.country_code).first()
+        user_currency = country.currency if country else None
 
         exchange_response = plaid_client.Item.public_token.exchange(public_token)
         user.plaid_access_token = exchange_response['access_token']
@@ -644,7 +717,64 @@ class ExchangePublicToken(Resource):
         db.session.commit()
         log_activity(user,"exchange public token")
 
-        return {"message": "Bank account linked successfully ✅"}
+        try:
+
+            access_token = exchange_response.access_token
+            item_id = exchange_response.item_id
+
+            # Get institution info
+            item_response = plaid_client.item_get(
+                plaid.ItemGetRequest(access_token=access_token)
+            )
+
+            institution_id = item_response.item.institution_id
+
+            # Get accounts
+            accounts_response = plaid_client.accounts_get(
+                plaid.AccountsGetRequest(access_token=access_token)
+            )
+
+            # Store accounts with proper currency
+            for account in accounts_response.accounts:
+                # Use account's currency or fallback to user's country currency
+                account_currency = account.balances.iso_currency_code or user_currency
+
+                bank_account = BankAccount(
+                    user_id=user.id,
+                    institution_name=item_response.item.institution_name or "Unknown",
+                    account_name=account.name,
+                    account_type=account.type,
+                    account_id=account.account_id,
+                    balance_available=account.balances.available,
+                    balance_current=account.balances.current,
+                    currency=account_currency,
+                    country_code=user.country_code
+                )
+                db.session.add(bank_account)
+
+            # Update user's plaid token (for backward compatibility)
+            user.plaid_access_token = access_token
+            user.plaid_item_id = item_id
+            db.session.commit()
+
+            log_activity(user, "Bank account linked")
+
+            return {
+                "message": "Bank account linked successfully",
+                "accounts_count": len(accounts_response.accounts),
+                "institution": item_response.item.institution_name,
+                "currency": user_currency
+            }, 201
+
+        except Exception as e:
+            return {"message": f"Error linking bank account: {str(e)}"}, 500
+
+
+
+
+        # return {"message": "Bank account linked successfully ✅"}
+
+
 api.add_resource(ExchangePublicToken, '/bank/exchange-token')
 
 class FetchTransactions(Resource):
@@ -953,28 +1083,1062 @@ api.add_resource(SyncBankDataAPI, '/bank/sync')
 
 
 
+# Request parsers for filtering
+countries_parser = reqparse.RequestParser()
+countries_parser.add_argument('continent', type=str, location='args', help='Filter by continent code')
+countries_parser.add_argument('language', type=str, location='args', help='Filter by language code')
+countries_parser.add_argument('plaid_supported', type=lambda x: x.lower() == 'true', location='args',
+                              help='Filter by Plaid support')
 
 
+class CountriesResource(Resource):
+    def get(self):
+        """Get all countries with optional filtering"""
+        try:
+            args = countries_parser.parse_args()
+
+            query = Country.query
+
+            if args['continent']:
+                query = query.filter_by(continent=args['continent'].upper())
+            if args['language']:
+                query = query.filter_by(language=args['language'].lower())
+            if args['plaid_supported'] is not None:
+                query = query.filter_by(plaid_supported=args['plaid_supported'])
+
+            countries = query.order_by(Country.name.asc()).all()
+
+            return {
+                'success': True,
+                'count': len(countries),
+                'countries': [{
+                    'code': c.code,
+                    'name': c.name,
+                    'continent': c.continent,
+                    'currency': c.currency,
+                    'timezone': c.timezone,
+                    'language': c.language,
+                    'plaid_supported': c.plaid_supported,
+                    'other_provider': c.other_provider
+                } for c in countries]
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching countries: {str(e)}'
+            }, 500
 
 
+class CountryDetailResource(Resource):
+    def get(self, country_code):
+        """Get details for a specific country"""
+        try:
+            country = Country.query.filter_by(code=country_code.upper()).first()
 
-with app.app_context():
-    # Messages.__table__.drop(db.engine)
-    # Messages.__table__.create(db.engine)
+            if not country:
+                return {
+                    'success': False,
+                    'message': f'Country with code {country_code} not found'
+                }, 404
 
-    # Messages.__table__.drop(db.engine)
-    # admin = User(username="Ohmatt", email="mattwhingan@gmail.com",  is_admin=True)
-    # admin.set_password("160118+Oh")
-    # db.session.add(admin)
-    # db.session.commit()
-    # print("✅ Admin user created")
-    me = User.query.filter_by(username="Ohmatt").first()
-    if me:
-        me.is_admin = True
+            return {
+                'success': True,
+                'country': {
+                    'code': country.code,
+                    'name': country.name,
+                    'continent': country.continent,
+                    'currency': country.currency,
+                    'timezone': country.timezone,
+                    'language': country.language,
+                    'plaid_supported': country.plaid_supported,
+                    'other_provider': country.other_provider,
+                    'plaid_country_code': country.plaid_country_code
+                }
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching country: {str(e)}'
+            }, 500
+
+
+class ContinentsResource(Resource):
+    def get(self):
+        """Get all continents"""
+        try:
+            continents = Continent.query.order_by(Continent.name.asc()).all()
+
+            return {
+                'success': True,
+                'count': len(continents),
+                'continents': [{
+                    'code': c.code,
+                    'name': c.name
+                } for c in continents]
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching continents: {str(e)}'
+            }, 500
+
+
+class ContinentCountriesResource(Resource):
+    def get(self, continent_code):
+        """Get all countries in a specific continent"""
+        try:
+            continent = Continent.query.filter_by(code=continent_code.upper()).first()
+
+            if not continent:
+                return {
+                    'success': False,
+                    'message': f'Continent with code {continent_code} not found'
+                }, 404
+
+            countries = Country.query.filter_by(continent=continent.code).order_by(Country.name.asc()).all()
+
+            return {
+                'success': True,
+                'continent': {
+                    'code': continent.code,
+                    'name': continent.name
+                },
+                'count': len(countries),
+                'countries': [{
+                    'code': c.code,
+                    'name': c.name,
+                    'currency': c.currency,
+                    'plaid_supported': c.plaid_supported
+                } for c in countries]
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching continent countries: {str(e)}'
+            }, 500
+
+
+class LanguagesResource(Resource):
+    def get(self):
+        """Get all languages"""
+        try:
+            languages = Language.query.order_by(Language.name.asc()).all()
+
+            return {
+                'success': True,
+                'count': len(languages),
+                'languages': [{
+                    'code': l.code,
+                    'name': l.name,
+                    'native_name': l.native_name
+                } for l in languages]
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching languages: {str(e)}'
+            }, 500
+
+
+class LanguageDetailResource(Resource):
+    def get(self, language_code):
+        """Get details for a specific language"""
+        try:
+            language = Language.query.filter_by(code=language_code.lower()).first()
+
+            if not language:
+                return {
+                    'success': False,
+                    'message': f'Language with code {language_code} not found'
+                }, 404
+
+            return {
+                'success': True,
+                'language': {
+                    'code': language.code,
+                    'name': language.name,
+                    'native_name': language.native_name
+                }
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching language: {str(e)}'
+            }, 500
+
+
+class SupportedBankingCountriesResource(Resource):
+    def get(self):
+        """Get countries with banking provider support"""
+        try:
+            # Get all countries with any banking provider
+            countries = Country.query.filter(
+                (Country.plaid_supported == True) |
+                (Country.other_provider.isnot(None))
+            ).order_by(Country.name.asc()).all()
+
+            result = []
+            for country in countries:
+                providers = []
+                if country.plaid_supported:
+                    providers.append('plaid')
+                if country.other_provider:
+                    providers.append(country.other_provider)
+
+                result.append({
+                    'code': country.code,
+                    'name': country.name,
+                    'continent': country.continent,
+                    'currency': country.currency,
+                    'providers': providers,
+                    'plaid_supported': country.plaid_supported
+                })
+
+            return {
+                'success': True,
+                'count': len(result),
+                'countries': result
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error fetching supported countries: {str(e)}'
+            }, 500
+
+
+class DetectLocationResource(Resource):
+    def get(self):
+        """Detect user's location based on IP"""
+        try:
+            # Try to import geoip2 if available
+            try:
+                import geoip2.database
+                from geoip2.errors import AddressNotFoundError
+
+                # For production, you'd use a proper GeoIP database
+                # This is just a template
+                ip_address = request.remote_addr
+
+                # Example structure - you'd need to download GeoLite2 database
+                # reader = geoip2.database.Reader('GeoLite2-City.mmdb')
+                # response = reader.city(ip_address)
+
+                # For now, return default values
+                return {
+                    'success': True,
+                    'detected': {
+                        'ip': ip_address,
+                        'country': 'US',  # Default fallback
+                        'continent': 'NA',
+                        'timezone': 'America/New_York',
+                        'method': 'ip_detection'
+                    },
+                    'note': 'Using default location. Install geoip2 and add GeoLite2 database for accurate detection.'
+                }, 200
+
+            except ImportError:
+                # Fallback to request headers or defaults
+                ip_address = request.remote_addr
+
+                # Check Cloudflare headers (if using Cloudflare)
+                country_from_header = request.headers.get('CF-IPCountry')
+                timezone_from_header = request.headers.get('CF-Timezone')
+
+                return {
+                    'success': True,
+                    'detected': {
+                        'ip': ip_address,
+                        'country': country_from_header or 'US',
+                        'continent': self._get_continent_from_country(
+                            country_from_header) if country_from_header else 'NA',
+                        'timezone': timezone_from_header or 'UTC',
+                        'method': 'header_detection' if country_from_header else 'default_fallback'
+                    },
+                    'note': 'Using headers for location detection. For better accuracy, install geoip2.'
+                }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Error detecting location: {str(e)}'
+            }, 500
+
+    def _get_continent_from_country(self, country_code):
+        """Helper to get continent from country code"""
+        if not country_code:
+            return 'NA'
+
+        country = Country.query.filter_by(code=country_code.upper()).first()
+        if country:
+            return country.continent
+
+        # Fallback mapping for common countries
+        continent_map = {
+            'US': 'NA', 'CA': 'NA', 'MX': 'NA',
+            'GB': 'EU', 'FR': 'EU', 'DE': 'EU', 'ES': 'EU', 'IT': 'EU',
+            'AU': 'OC', 'NZ': 'OC',
+            'JP': 'AS', 'CN': 'AS', 'IN': 'AS', 'KR': 'AS',
+            'ZA': 'AF', 'NG': 'AF', 'KE': 'AF',
+            'BR': 'SA', 'AR': 'SA', 'CL': 'SA'
+        }
+
+        return continent_map.get(country_code.upper(), 'NA')
+
+
+# Admin Resources (if you want admin-only geo management)
+class AdminCountriesResource(Resource):
+    @jwt_required()
+    def post(self):
+        """Add a new country (admin only)"""
+        try:
+
+            current_user = get_jwt_identity()
+            user = User.query.filter_by(username=current_user).first()
+
+            if not user or not user.is_admin:
+                return {
+                    'success': False,
+                    'message': 'Admin access required'
+                }, 403
+
+            data = request.get_json()
+
+            # Validate required fields
+            required_fields = ['code', 'name', 'continent', 'currency', 'timezone', 'language']
+            for field in required_fields:
+                if field not in data:
+                    return {
+                        'success': False,
+                        'message': f'Missing required field: {field}'
+                    }, 400
+
+            # Check if country already exists
+            if Country.query.filter_by(code=data['code'].upper()).first():
+                return {
+                    'success': False,
+                    'message': f'Country with code {data["code"]} already exists'
+                }, 400
+
+            # Create new country
+            country = Country(
+                code=data['code'].upper(),
+                name=data['name'],
+                continent=data['continent'].upper(),
+                currency=data['currency'].upper(),
+                timezone=data['timezone'],
+                language=data['language'].lower(),
+                plaid_supported=data.get('plaid_supported', False),
+                plaid_country_code=data.get('plaid_country_code'),
+                other_provider=data.get('other_provider')
+            )
+
+            db.session.add(country)
+            db.session.commit()
+
+            return {
+                'success': True,
+                'message': f'Country {country.name} added successfully',
+                'country': {
+                    'code': country.code,
+                    'name': country.name
+                }
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'success': False,
+                'message': f'Error adding country: {str(e)}'
+            }, 500
+
+
+# New Resource for getting supported countries
+class SupportedCountriesResource(Resource):
+    def get(self):
+        """Get countries supported by banking providers"""
+        plaid_supported = request.args.get('plaid_supported', 'true').lower() == 'true'
+
+        query = Country.query
+        if plaid_supported:
+            query = query.filter_by(plaid_supported=True)
+
+        countries = query.all()
+
+        result = []
+        for country in countries:
+            providers = []
+            if country.plaid_supported:
+                providers.append('plaid')
+            if country.other_provider:
+                providers.append(country.other_provider)
+
+            result.append({
+                'code': country.code,
+                'name': country.name,
+                'continent': country.continent,
+                'currency': country.currency,
+                'providers': providers,
+                'plaid_supported': country.plaid_supported
+            })
+
+        return jsonify(result), 200
+api.add_resource(SupportedCountriesResource, '/bank/supported-countries')
+
+# Keep all your existing Resources (TasksAPI, VerifyAccount, PasswordResetResource, etc.)
+# with minimal modifications to use the new user model
+
+class UpdateProfileResource(Resource):
+    @jwt_required()
+    def put(self):
+        """Update user profile including country/language"""
+        current_identity = get_jwt_identity()
+        user = User.query.filter_by(username=current_identity).first()
+
+        if not user:
+            return {"message": "User not found"}, 404
+
+        data = request.get_json()
+
+        # Update country if provided
+        if 'country_code' in data:
+            country = Country.query.filter_by(code=data['country_code'].upper()).first()
+            if not country:
+                return {"message": "Invalid country code"}, 400
+            user.country_code = country.code
+
+            # Update continent based on country
+            continent = Continent.query.filter_by(code=country.continent).first()
+            if continent:
+                user.continent_code = continent.code
+
+        # Update language if provided
+        if 'language_code' in data:
+            language = Language.query.filter_by(code=data['language_code'].lower()).first()
+            if not language:
+                return {"message": "Invalid language code"}, 400
+            user.language_code = language.code
+
+        # Update timezone if provided
+        if 'timezone' in data:
+            user.timezone = data['timezone']
+
         db.session.commit()
-        print("Admin privileges granted ✅")
-    else:
-        print("User not found ❌")
-    db.create_all()
+        log_activity(user, "Profile updated")
+
+        return {"message": "Profile updated successfully"}, 200
+api.add_resource(UpdateProfileResource, '/profile/update')
+
+# Register all resources
+
+api.add_resource(CountriesResource, '/countries')
+api.add_resource(CountryDetailResource, '/countries/<string:country_code>')
+api.add_resource(ContinentsResource, '/continents')
+api.add_resource(ContinentCountriesResource, '/continents/<string:continent_code>/countries')
+api.add_resource(LanguagesResource, '/languages')
+api.add_resource(LanguageDetailResource, '/languages/<string:language_code>')
+api.add_resource(SupportedBankingCountriesResource, '/banking/supported-countries')
+api.add_resource(DetectLocationResource, '/location/detect')
+api.add_resource(AdminCountriesResource, '/admin/countries')  # Admin only
+
+# Request parsers
+bank_connect_parser = reqparse.RequestParser()
+bank_connect_parser.add_argument('provider', type=str, required=False,
+                                 help='Specific provider to use (optional)')
+bank_connect_parser.add_argument('account_number', type=str, required=False)
+bank_connect_parser.add_argument('bank_code', type=str, required=False)
+
+
+class UnifiedBankConnectResource(Resource):
+    """Unified banking connection for all providers"""
+
+    @jwt_required()
+    def get(self):
+        """Get banking connection options for user's country"""
+        current_user = get_jwt_identity()
+        user = User.query.filter_by(username=current_user).first()
+
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+
+        if not user.country_code:
+            return {"success": False, "message": "User country not set"}, 400
+
+        country = Country.query.filter_by(code=user.country_code).first()
+        if not country:
+            return {"success": False, "message": "Invalid country code"}, 400
+
+        # Get available providers for user's country
+        available_providers = ProviderRegistry.get_providers_for_country(user.country_code)
+
+        if not available_providers:
+            return {
+                "success": False,
+                "message": f"No banking providers available for {country.name}",
+                "country": user.country_code
+            }, 400
+
+        # Get provider details
+        providers_info = []
+        for provider_name in available_providers:
+            # Check if provider is configured
+            config_key = f"{provider_name.upper()}_CONFIG"
+            provider_config = app.config.get(config_key, {})
+
+            if provider_config.get('enabled', True):
+                providers_info.append({
+                    'name': provider_name,
+                    'display_name': provider_name.title(),
+                    'supported_features': self._get_provider_features(provider_name),
+                    'requires_account_number': provider_name in ['flutterwave', 'paystack', 'mono']
+                })
+
+        return {
+            "success": True,
+            "country": {
+                "code": user.country_code,
+                "name": country.name,
+                "currency": country.currency
+            },
+            "available_providers": providers_info,
+            "recommended_provider": available_providers[0]  # First is default
+        }, 200
+
+    @jwt_required()
+    def post(self):
+        """Connect to banking provider"""
+        args = bank_connect_parser.parse_args()
+        current_user = get_jwt_identity()
+        user = User.query.filter_by(username=current_user).first()
+
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+
+        # Determine which provider to use
+        provider_name = args.get('provider')
+        if not provider_name:
+            # Use default for user's country
+            provider_name = ProviderRegistry.get_default_provider_for_country(user.country_code)
+            if not provider_name:
+                return {"success": False, "message": "No provider available for your country"}, 400
+
+        # Get provider config
+        config_key = f"{provider_name.upper()}_CONFIG"
+        provider_config = app.config.get(config_key, {})
+
+        if not provider_config:
+            return {"success": False, "message": f"Provider {provider_name} not configured"}, 400
+
+        try:
+            # Create provider instance
+            provider = ProviderRegistry.create_provider(provider_name, provider_config)
+
+            # Different providers have different connection methods
+            if provider_name in ['flutterwave', 'paystack', 'mono']:
+                # African providers often use account verification
+                account_number = args.get('account_number')
+                bank_code = args.get('bank_code')
+
+                if not account_number or not bank_code:
+                    return {
+                        "success": False,
+                        "message": "Account number and bank code required for this provider"
+                    }, 400
+
+                # Verify account
+                if hasattr(provider, 'verify_bank_account'):
+                    result = provider.verify_bank_account(account_number, bank_code, user.country_code)
+
+                    if result.get('success'):
+                        # Store connection
+                        connection = BankConnection(
+                            user_id=user.id,
+                            provider_id=provider_name,
+                            institution_name=result.get('bank_name', 'Unknown'),
+                            account_name=result.get('account_name'),
+                            account_number=account_number,
+                            bank_code=bank_code,
+                            is_active=True
+                        )
+
+                        db.session.add(connection)
+                        db.session.commit()
+
+                        logger.info(f"User {user.id} connected {provider_name} account")
+
+                        return {
+                            "success": True,
+                            "message": f"Bank account verified and connected via {provider_name}",
+                            "connection_id": connection.id,
+                            "account_name": result.get('account_name'),
+                            "provider": provider_name
+                        }, 201
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Account verification failed: {result.get('error')}"
+                        }, 400
+
+            elif provider_name == 'plaid':
+                # Plaid uses link tokens (handled by existing PlaidResource)
+                return {
+                    "success": False,
+                    "message": "Use /bank/link-token endpoint for Plaid"
+                }, 400
+
+            else:
+                # Other providers (OAuth flow)
+                link_data = provider.create_link_token(str(user.id), user.country_code)
+
+                return {
+                    "success": True,
+                    "provider": provider_name,
+                    "connection_method": link_data.get('auth_type', 'oauth'),
+                    "data": link_data
+                }, 200
+
+        except Exception as e:
+            logger.error(f"Error connecting to {provider_name}: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Error connecting to {provider_name}: {str(e)}"
+            }, 500
+
+    def _get_provider_features(self, provider_name: str) -> List[str]:
+        """Get features supported by provider"""
+        features_map = {
+            'plaid': ['transactions', 'balances', 'accounts', 'auth'],
+            'flutterwave': ['account_verification', 'transfers', 'payments', 'balance'],
+            'paystack': ['account_verification', 'payments', 'subscriptions'],
+            'mono': ['account_linking', 'transactions', 'identity'],
+            'stitch': ['payments', 'account_linking'],
+            'okra': ['account_linking', 'transactions', 'income'],
+            'bloc': ['account_linking', 'transfers']
+        }
+
+        return features_map.get(provider_name, ['payments'])
+
+
+class BankAccountsResource(Resource):
+    """Get user's connected bank accounts across all providers"""
+
+    @jwt_required()
+    def get(self):
+        current_user = get_jwt_identity()
+        user = User.query.filter_by(username=current_user).first()
+
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+
+        connections = BankConnection.query.filter_by(user_id=user.id, is_active=True).all()
+
+        accounts = []
+        for conn in connections:
+            accounts.append({
+                'id': conn.id,
+                'provider': conn.provider_id,
+                'institution_name': conn.institution_name,
+                'account_name': conn.account_name,
+                'account_number': conn.account_number,
+                'created_at': conn.created_at.isoformat() if conn.created_at else None,
+                'last_sync': conn.last_sync.isoformat() if conn.last_sync else None
+            })
+
+        return {
+            "success": True,
+            "count": len(accounts),
+            "accounts": accounts
+        }, 200
+
+
+class WebhookResource(Resource):
+    """Handle webhooks from various banking providers"""
+
+    def post(self, provider_name: str):
+        """Process webhook from banking provider"""
+        webhook_data = request.get_json()
+        signature = request.headers.get('x-paystack-signature') or \
+                    request.headers.get('verif-hash') or \
+                    request.headers.get('x-flutterwave-signature')
+
+        # Get provider config
+        config_key = f"{provider_name.upper()}_CONFIG"
+        provider_config = app.config.get(config_key, {})
+
+        if not provider_config:
+            logger.warning(f"Webhook from unconfigured provider: {provider_name}")
+            return {"success": False, "message": "Provider not configured"}, 400
+
+        try:
+            # Create provider instance
+            provider = ProviderRegistry.create_provider(provider_name, provider_config)
+
+            # Verify signature if required
+            if hasattr(provider, 'verify_webhook_signature'):
+                if not provider.verify_webhook_signature(request.data.decode('utf-8'), signature):
+                    logger.warning(f"Invalid webhook signature from {provider_name}")
+                    return {"success": False, "message": "Invalid signature"}, 400
+
+            # Process webhook based on provider
+            transaction = None
+            if provider_name == 'paystack':
+                if hasattr(provider, 'process_transaction_webhook'):
+                    transaction = provider.process_transaction_webhook(webhook_data)
+            elif provider_name == 'flutterwave':
+                # Process Flutterwave webhook
+                transaction = self._process_flutterwave_webhook(webhook_data)
+
+            # Store transaction in database if applicable
+            if transaction:
+                self._store_transaction(transaction)
+                logger.info(f"Processed {provider_name} webhook: {transaction.get('reference')}")
+
+            return {"success": True, "message": "Webhook processed"}, 200
+
+        except Exception as e:
+            logger.error(f"Error processing {provider_name} webhook: {str(e)}")
+            return {"success": False, "message": "Webhook processing failed"}, 500
+
+    def _process_flutterwave_webhook(self, data: Dict) -> Dict[str, Any]:
+        """Process Flutterwave webhook"""
+        event = data.get('event')
+        transaction_data = data.get('data', {})
+
+        return {
+            'provider': 'flutterwave',
+            'event': event,
+            'transaction_id': transaction_data.get('id'),
+            'tx_ref': transaction_data.get('tx_ref'),
+            'amount': transaction_data.get('amount'),
+            'currency': transaction_data.get('currency'),
+            'status': transaction_data.get('status'),
+            'payment_type': transaction_data.get('payment_type'),
+            'created_at': transaction_data.get('created_at'),
+            'customer': transaction_data.get('customer', {})
+        }
+
+    def _store_transaction(self, transaction: Dict):
+        """Store transaction from webhook"""
+
+
+        # Find user by email or reference
+        user = None
+        if 'customer' in transaction:
+            email = transaction['customer'].get('email')
+            if email:
+                user = User.query.filter_by(email=email).first()
+
+        if user:
+            bank_txn = BankTransaction(
+                user_id=user.id,
+                transaction_id=transaction.get('transaction_id') or transaction.get('reference'),
+                description=f"{transaction.get('provider')} transaction",
+                amount=transaction.get('amount', 0),
+                date=datetime.utcnow(),
+                currency=transaction.get('currency', 'NGN'),
+                metadata=transaction
+            )
+
+            db.session.add(bank_txn)
+            db.session.commit()
+
+
+class GlobalBankConnectResource(Resource):
+    """Global banking connection for all providers"""
+
+    @jwt_required()
+    def get(self):
+        """Get available banking options for user's country"""
+        current_user = get_jwt_identity()
+        user = User.query.filter_by(username=current_user).first()
+
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+
+        if not user.country_code:
+            return {"success": False, "message": "User country not set"}, 400
+
+        country = Country.query.filter_by(code=user.country_code).first()
+        if not country:
+            return {"success": False, "message": "Invalid country code"}, 400
+
+        # Get available providers
+        providers = ProviderRegistry.get_providers_for_country(user.country_code)
+
+        if not providers:
+            return {
+                "success": False,
+                "message": f"No banking providers available for {country.name}",
+                "country": user.country_code
+            }, 400
+
+        # Get provider details
+        providers_info = []
+        for provider_name in providers:
+            config_key = f"{provider_name.upper()}_CONFIG"
+            provider_config = current_app.config.get(config_key, {})
+
+            if provider_config.get('enabled', True):
+                try:
+                    provider = ProviderRegistry.create_provider(provider_name, provider_config)
+                    capabilities = provider.get_capabilities()
+
+                    providers_info.append({
+                        'name': provider_name,
+                        'display_name': provider_name.title(),
+                        'capabilities': capabilities,
+                        'method': 'oauth' if provider_name in ['plaid', 'truelayer'] else 'account_verification'
+                    })
+                except Exception as e:
+                    logger.error(f"Error creating provider {provider_name}: {e}")
+                    continue
+
+        return {
+            "success": True,
+            "country": {
+                "code": user.country_code,
+                "name": country.name,
+                "currency": country.currency
+            },
+            "available_providers": providers_info,
+            "recommended": providers[0]
+        }, 200
+api.add_resource(GlobalBankConnectResource, '/banking/options')
+
+
+def seed_geo_data():
+    with app.app_context():
+        # Messages.__table__.drop(db.engine)
+        # Messages.__table__.create(db.engine)
+
+        # Messages.__table__.drop(db.engine)
+        # admin = User(username="Ohmatt", email="mattwhingan@gmail.com",  is_admin=True)
+        # admin.set_password("160118+Oh")
+        # db.session.add(admin)
+        # db.session.commit()
+        # print("✅ Admin user created")
+        me = User.query.filter_by(username="Ohmatt").first()
+        if me:
+            me.is_admin = True
+            db.session.commit()
+            print("Admin privileges granted ✅")
+        else:
+            print("User not found ❌")
+        db.create_all()
+
+
+        # Clear existing data
+        db.session.query(Country).delete()
+        db.session.query(Continent).delete()
+        db.session.query(Language).delete()
+
+        print("Seeding African countries...")
+
+        # Ensure Africa continent exists
+        africa = Continent.query.filter_by(code='AF').first()
+        if not africa:
+            africa = Continent(code='AF', name='Africa')
+            db.session.add(africa)
+            db.session.commit()
+
+        # Add African countries with banking providers
+        african_countries = [
+            # Nigeria - multiple providers
+            {
+                'code': 'NG', 'name': 'Nigeria', 'continent': 'AF',
+                'currency': 'NGN', 'timezone': 'Africa/Lagos',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'flutterwave'  # Primary provider
+            },
+            # Kenya
+            {
+                'code': 'KE', 'name': 'Kenya', 'continent': 'AF',
+                'currency': 'KES', 'timezone': 'Africa/Nairobi',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'flutterwave'
+            },
+            # Ghana
+            {
+                'code': 'GH', 'name': 'Ghana', 'continent': 'AF',
+                'currency': 'GHS', 'timezone': 'Africa/Accra',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'flutterwave'
+            },
+            # South Africa
+            {
+                'code': 'ZA', 'name': 'South Africa', 'continent': 'AF',
+                'currency': 'ZAR', 'timezone': 'Africa/Johannesburg',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'stitch'
+            },
+            # Rwanda
+            {
+                'code': 'RW', 'name': 'Rwanda', 'continent': 'AF',
+                'currency': 'RWF', 'timezone': 'Africa/Kigali',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'flutterwave'
+            },
+            # Uganda
+            {
+                'code': 'UG', 'name': 'Uganda', 'continent': 'AF',
+                'currency': 'UGX', 'timezone': 'Africa/Kampala',
+                'language': 'en', 'plaid_supported': False,
+                'other_provider': 'flutterwave'
+            },
+            # Tanzania
+            {
+                'code': 'TZ', 'name': 'Tanzania', 'continent': 'AF',
+                'currency': 'TZS', 'timezone': 'Africa/Dar_es_Salaam',
+                'language': 'sw', 'plaid_supported': False,
+                'other_provider': 'flutterwave'
+            },
+            # Egypt
+            {
+                'code': 'EG', 'name': 'Egypt', 'continent': 'AF',
+                'currency': 'EGP', 'timezone': 'Africa/Cairo',
+                'language': 'ar', 'plaid_supported': False,
+                'other_provider': 'other'  # Need specific Egyptian provider
+            },
+            # Ethiopia
+            {
+                'code': 'ET', 'name': 'Ethiopia', 'continent': 'AF',
+                'currency': 'ETB', 'timezone': 'Africa/Addis_Ababa',
+                'language': 'am', 'plaid_supported': False,
+                'other_provider': 'other'
+            },
+            # Morocco
+            {
+                'code': 'MA', 'name': 'Morocco', 'continent': 'AF',
+                'currency': 'MAD', 'timezone': 'Africa/Casablanca',
+                'language': 'ar', 'plaid_supported': False,
+                'other_provider': 'other'
+            },
+        ]
+
+        for data in african_countries:
+            country = Country.query.filter_by(code=data['code']).first()
+            if not country:
+                country = Country(**data)
+                db.session.add(country)
+                print(f"Added {data['name']} ({data['code']})")
+            else:
+                # Update existing country
+                for key, value in data.items():
+                    setattr(country, key, value)
+                print(f"Updated {data['name']} ({data['code']})")
+
+        db.session.commit()
+        print(f"✅ Seeded {len(african_countries)} African countries")
+
+        # Add continents
+        continents = [
+            {'code': 'AF', 'name': 'Africa'},
+            {'code': 'AS', 'name': 'Asia'},
+            {'code': 'EU', 'name': 'Europe'},
+            {'code': 'NA', 'name': 'North America'},
+            {'code': 'SA', 'name': 'South America'},
+            {'code': 'OC', 'name': 'Oceania'},
+            {'code': 'AN', 'name': 'Antarctica'}
+        ]
+
+        for data in continents:
+            continent = Continent(**data)
+            db.session.add(continent)
+
+        # Add languages
+        languages = [
+            {'code': 'en', 'name': 'English', 'native_name': 'English'},
+            {'code': 'es', 'name': 'Spanish', 'native_name': 'Español'},
+            {'code': 'fr', 'name': 'French', 'native_name': 'Français'},
+            {'code': 'de', 'name': 'German', 'native_name': 'Deutsch'},
+            {'code': 'pt', 'name': 'Portuguese', 'native_name': 'Português'},
+            {'code': 'zh', 'name': 'Chinese', 'native_name': '中文'},
+            {'code': 'ar', 'name': 'Arabic', 'native_name': 'العربية'},
+            {'code': 'hi', 'name': 'Hindi', 'native_name': 'हिन्दी'},
+            {'code': 'ru', 'name': 'Russian', 'native_name': 'Русский'},
+            {'code': 'ja', 'name': 'Japanese', 'native_name': '日本語'}
+        ]
+
+        for data in languages:
+            language = Language(**data)
+            db.session.add(language)
+
+        # Add sample countries (focus on Plaid-supported ones)
+        countries = [
+            {
+                'code': 'US', 'name': 'United States', 'continent': 'NA',
+                'currency': 'USD', 'timezone': 'America/New_York',
+                'language': 'en', 'plaid_supported': True, 'plaid_country_code': 'US'
+            },
+            {
+                'code': 'CA', 'name': 'Canada', 'continent': 'NA',
+                'currency': 'CAD', 'timezone': 'America/Toronto',
+                'language': 'en', 'plaid_supported': True, 'plaid_country_code': 'CA'
+            },
+            {
+                'code': 'GB', 'name': 'United Kingdom', 'continent': 'EU',
+                'currency': 'GBP', 'timezone': 'Europe/London',
+                'language': 'en', 'plaid_supported': True, 'plaid_country_code': 'GB'
+            },
+            {
+                'code': 'IE', 'name': 'Ireland', 'continent': 'EU',
+                'currency': 'EUR', 'timezone': 'Europe/Dublin',
+                'language': 'en', 'plaid_supported': True, 'plaid_country_code': 'IE'
+            },
+            {
+                'code': 'ES', 'name': 'Spain', 'continent': 'EU',
+                'currency': 'EUR', 'timezone': 'Europe/Madrid',
+                'language': 'es', 'plaid_supported': True, 'plaid_country_code': 'ES'
+            },
+            {
+                'code': 'FR', 'name': 'France', 'continent': 'EU',
+                'currency': 'EUR', 'timezone': 'Europe/Paris',
+                'language': 'fr', 'plaid_supported': True, 'plaid_country_code': 'FR'
+            },
+            {
+                'code': 'NL', 'name': 'Netherlands', 'continent': 'EU',
+                'currency': 'EUR', 'timezone': 'Europe/Amsterdam',
+                'language': 'nl', 'plaid_supported': True, 'plaid_country_code': 'NL'
+            },
+            {
+                'code': 'DE', 'name': 'Germany', 'continent': 'EU',
+                'currency': 'EUR', 'timezone': 'Europe/Berlin',
+                'language': 'de', 'plaid_supported': True, 'plaid_country_code': 'DE'
+            },
+            # Add more countries as needed
+        ]
+
+        for data in countries:
+            country = Country(**data)
+            db.session.add(country)
+
+        db.session.commit()
+        print("✅ Geo data seeded successfully!")
+
+# with app.app_context():
+#     # Messages.__table__.drop(db.engine)
+#     # Messages.__table__.create(db.engine)
+#
+#     # Messages.__table__.drop(db.engine)
+#     # admin = User(username="Ohmatt", email="mattwhingan@gmail.com",  is_admin=True)
+#     # admin.set_password("160118+Oh")
+#     # db.session.add(admin)
+#     # db.session.commit()
+#     # print("✅ Admin user created")
+#     me = User.query.filter_by(username="Ohmatt").first()
+#     if me:
+#         me.is_admin = True
+#         db.session.commit()
+#         print("Admin privileges granted ✅")
+#     else:
+#         print("User not found ❌")
+#     db.create_all()
 if __name__ == '__main__':
     app.run(debug=True)
+    seed_geo_data()

@@ -1,6 +1,7 @@
 instance/
 
 tired.py
+config.py
 ohma_tasks.db
 resources.py
 spec_tasks.db
