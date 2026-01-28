@@ -12,30 +12,8 @@ from flask_mail import Mail
 from itsdangerous import URLSafeTimedSerializer
 from flask_migrate import Migrate
 
-Base= declarative_base()
+from config import db, Base
 
-app = Flask(__name__)
-api = Api(app)
-jwt=JWTManager(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# Looking to send emails in production? Check out our Email API/SMTP product!
-app.config['MAIL_SERVER']='sandbox.smtp.mailtrap.io'
-app.config['MAIL_PORT'] = 2525
-app.config['MAIL_USERNAME'] = 'd5c82933204588'
-app.config['MAIL_PASSWORD'] = '48a454b81a1e63'
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USE_SSL'] = False
-# set expiration in seconds (example: 24 hours)
-app.config['EMAIL_TOKEN_EXPIRATION'] = 24 * 60 * 60  # 86400 seconds
-SECRET_KEY = 'your-secret-key'
-JWT_SECRET_KEY = 'your-jwt-secret'
-app.config['SECRET_KEY'] = SECRET_KEY
-serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
-db=SQLAlchemy(app)
-mail = Mail(app)
-migrate=Migrate(app,db)
 
 # class User(db.Model):
 #     id=db.Column(db.Integer,primary_key=True)

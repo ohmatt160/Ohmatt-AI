@@ -12,7 +12,8 @@ from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.products import Products
 from sqlalchemy.orm import sessionmaker
 from ai_module import categorize_transaction, analyze_spending
-from model import User, serializer, mail, Activity, app, db, Transaction
+from config import serializer, mail,app
+from model import User, Activity,  db, Transaction
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import create_engine
 from flask_mail import Message

@@ -10,8 +10,8 @@ from flask_restful import Resource, marshal_with, reqparse, fields
 
 from sqlalchemy.sql.functions import user
 
-from config import plaid_client, configuration, logger
-from model import User, Transaction, Activity, Messages, Tasks, app, api, Base, db, BankTransaction, BankAccount, \
+from config import plaid_client, configuration, logger, app, api
+from model import User, Transaction, Activity, Messages, Tasks, Base, db, BankTransaction, BankAccount, \
     Country, Continent, Language, BankConnection
 
 from plaid.api import plaid_api
