@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from app.models.user import User
 from app.models.country import Country
 from app.models.language import Language
@@ -13,11 +14,17 @@ from app.config import settings
 class UserService:
     @staticmethod
     def create_user(db: Session, user_data: UserCreate) -> User:
-        existing = db.query(User).filter(User.email == user_data.email).first()
+        email = user_data.email.strip().lower()
+        existing = db.query(User).filter(func.lower(User.email) == email).first()
         if existing:
-            raise HTTPException(status_code=409, detail="Email already exists")
+            raise HTTPException(
+                status_code=409,
+                detail="An account with this email already exists. Please sign in instead.",
+            )
 
-        username = user_data.username or user_data.email.split('@')[0]
+        username = (user_data.username or email.split('@')[0]).strip()
+        if db.query(User).filter(func.lower(User.username) == username.lower()).first():
+            username = f"{username}-{email.split('@')[1].split('.')[0]}"
 
         country = None
         if user_data.country_id and str(user_data.country_id).isdigit():
@@ -36,7 +43,7 @@ class UserService:
 
         user = User(
             username=username,
-            email=user_data.email,
+            email=email,
             country_id=country.id if country else None,
             language_id=language.id if language else None,
             timezone=user_data.timezone or "UTC",
@@ -48,13 +55,20 @@ class UserService:
                 "transaction_alerts": True,
                 "two_factor_enabled": False,
             },
-            is_admin=user_data.email.lower() in settings.admin_emails,
-            is_verified=user_data.email.lower() in settings.admin_emails,
+            is_admin=email in settings.admin_emails,
+            is_verified=email in settings.admin_emails,
         )
         user.set_password(user_data.password)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        try:
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="An account with this email already exists. Please sign in instead.",
+            )
         return user
 
     @staticmethod

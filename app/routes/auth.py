@@ -18,9 +18,28 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
+def serialize_user(user: User) -> dict:
+    preferences = user.preferences or {}
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "country_id": str(user.country_id) if user.country_id is not None else None,
+        "language_id": str(user.language_id) if user.language_id is not None else None,
+        "timezone": user.timezone,
+        "preferences": preferences,
+        "is_admin": user.is_admin,
+        "is_verified": user.is_verified,
+        "currency": preferences.get("currency"),
+        "created_at": None,
+        "is_active": preferences.get("is_active", True),
+    }
+
+
 @router.post("/register", response_model=UserResponse)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    return UserService.create_user(db, user)
+    created_user = UserService.create_user(db, user)
+    return serialize_user(created_user)
 
 
 @router.post("/login", response_model=Token)
@@ -70,7 +89,7 @@ def verify_account(data: VerifyRequest, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 def read_current_user(current_user: User = Depends(get_current_user)):
-    return current_user
+    return serialize_user(current_user)
 
 @router.put("/me", response_model=UserResponse)
 def update_profile(
@@ -101,7 +120,7 @@ def update_profile(
 
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return serialize_user(current_user)
 
 @router.post("/change-password")
 def change_password(
