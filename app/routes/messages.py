@@ -78,6 +78,9 @@ async def get_messages(
             "content": m.content,
             "timestamp": m.timestamp.isoformat() if m.timestamp else None,
             "is_read": m.is_read,
+            "status": m.status,
+            "is_edited": m.is_edited,
+            "is_deleted": m.is_deleted,
         }
         for m in messages
     ]

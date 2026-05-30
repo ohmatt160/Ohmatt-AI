@@ -6,6 +6,7 @@ from datetime import datetime
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
+    two_factor_code: Optional[str] = Field(None, min_length=6, max_length=6)
 
 class VerifyRequest(BaseModel):
     token: str
@@ -94,3 +95,6 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str = Field(...)
     new_password: str = Field(..., min_length=8)
+
+class TwoFactorVerifyRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6)

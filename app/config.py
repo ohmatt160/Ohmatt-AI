@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DESCRIPTION: str = "A personal finance API with bank integration"
     API_V1_STR: str = "/api/v1"
     ENV: str = Field(default="development", env="ENV")
+    FRONTEND_URL: str = Field(default="http://localhost:5173", env="FRONTEND_URL")
     AUTO_SEED_GEO: bool = Field(default=True, env="AUTO_SEED_GEO")
     
     # Security
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     MAIL_USE_TLS: bool = Field(default=True, env="MAIL_USE_TLS")
     MAIL_USE_SSL: bool = Field(default=False, env="MAIL_USE_SSL")
     EMAIL_TOKEN_EXPIRATION: int = Field(default=24 * 60 * 60, env="EMAIL_TOKEN_EXPIRATION")  # 24 hours
+    PASSWORD_RESET_LINK_RESPONSE_ENABLED: bool = Field(
+        default=False,
+        env="PASSWORD_RESET_LINK_RESPONSE_ENABLED",
+    )
     
     # Plaid Configuration
     PLAID_CLIENT_ID: Optional[str] = Field(default=None, env="PLAID_CLIENT_ID")

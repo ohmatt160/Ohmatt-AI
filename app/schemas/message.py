@@ -19,3 +19,6 @@ class MessageResponse(BaseModel):
     content: str
     timestamp: str
     is_read: bool
+    status: Optional[str] = None
+    is_edited: bool = False
+    is_deleted: bool = False

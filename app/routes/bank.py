@@ -15,7 +15,7 @@ from app.schemas.bank import (
     BankAccountVerificationRequest,
     BankDisconnectRequest,
     BankConnectRequest,
-    BankTokenExchangeRequest,
+    BankTokenExchangeRequest, BankAccountResponse,
 )
 from app.providers.flutterwave_provider import FlutterwaveProvider
 from app.providers.mono_provider import MonoProvider
@@ -26,18 +26,6 @@ from app.utils.auth import get_current_user
 router = APIRouter(prefix="/bank", tags=["banking"])
 
 
-class BankAccountResponse(BaseModel):
-    id: int
-    connection_id: Optional[int]
-    institution_name: str
-    bankName: str
-    account_name: str
-    account_type: str
-    accountMask: Optional[str]
-    balance_available: Optional[float]
-    balance_current: Optional[float]
-    currency: str
-    status: str
 
 
 DEFAULT_PROVIDERS = [

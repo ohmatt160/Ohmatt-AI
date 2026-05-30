@@ -3,13 +3,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.extensions import db_session
 from app.models.user import User
+from app.schemas.user import VerifyRequest
 from app.utils.auth import confirm_token
 
 router = APIRouter(prefix="/verify", tags=["verify"])
-
-
-class VerifyRequest(BaseModel):
-    token: str
 
 
 @router.post("")

@@ -40,16 +40,20 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-def generate_token(email: str) -> str:
-    """Generate a verification token for email"""
+def generate_token(email: str, purpose: str = "email-verification") -> str:
+    """Generate a signed token for an email-scoped action."""
     serializer = URLSafeTimedSerializer(settings.JWT_SECRET_KEY)
-    return serializer.dumps(email, salt="email-verification")
+    return serializer.dumps(email, salt=purpose)
 
-def confirm_token(token: str, expiration: int = 86400) -> Optional[str]:
-    """Confirm a verification token (default 24 hours)"""
+def confirm_token(
+    token: str,
+    expiration: int = 86400,
+    purpose: str = "email-verification",
+) -> Optional[str]:
+    """Confirm a signed email token."""
     serializer = URLSafeTimedSerializer(settings.JWT_SECRET_KEY)
     try:
-        email = serializer.loads(token, salt="email-verification", max_age=expiration)
+        email = serializer.loads(token, salt=purpose, max_age=expiration)
         return email
     except:
         return None

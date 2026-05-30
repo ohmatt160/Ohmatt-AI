@@ -46,6 +46,7 @@ def init_extensions(app=None):
     import app.models.blacklist
     import app.models.messages
     import app.models.insight
+    import app.models.finance
 
     try:
         Base.metadata.create_all(bind=engine)

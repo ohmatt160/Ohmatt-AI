@@ -23,18 +23,6 @@ def admin_required(current_user: User = Depends(get_current_user)):
     return current_user
 
 
-# class UserResponse(BaseModel):
-#     id: int
-#     username: str
-#     email: str
-#     is_admin: bool
-#     is_verified: bool
-#     is_active: bool
-#     country_id: Optional[str]
-#     timezone: Optional[str]
-#     currency: Optional[str]
-#     created_at: Optional[str]
-
 
 @router.get("/stats")
 async def get_stats(

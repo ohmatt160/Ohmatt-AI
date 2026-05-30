@@ -102,9 +102,6 @@ async def paystack_webhook(request: Request):
 
     return {"status": "ok"}
 
-
-
-
 @router.post("/plaid")
 async def plaid_webhook(request: Request):
     """Receive transaction updates from Plaid"""
