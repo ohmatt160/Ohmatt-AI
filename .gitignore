@@ -109,4 +109,6 @@ htmlcov/
 
 # SQLite
 *.sqlite
-
+*.pkl
+.env.production.example
+.dockerignore
