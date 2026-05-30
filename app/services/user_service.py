@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.models.user import User
 from app.models.country import Country
 from app.models.language import Language
@@ -6,6 +7,7 @@ from app.schemas.user import UserCreate
 from app.utils.auth import verify_token
 from typing import Optional
 from fastapi import HTTPException
+from app.config import settings
 
 
 class UserService:
@@ -46,6 +48,8 @@ class UserService:
                 "transaction_alerts": True,
                 "two_factor_enabled": False,
             },
+            is_admin=user_data.email.lower() in settings.admin_emails,
+            is_verified=user_data.email.lower() in settings.admin_emails,
         )
         user.set_password(user_data.password)
         db.add(user)
@@ -54,10 +58,21 @@ class UserService:
         return user
 
     @staticmethod
-    def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
-        user = db.query(User).filter(User.email == email).first()
+    def authenticate_user(db: Session, login: str, password: str) -> Optional[User]:
+        normalized_login = login.strip().lower()
+        user = db.query(User).filter(
+            or_(
+                User.email == normalized_login,
+                User.username == login.strip(),
+            )
+        ).first()
         if not user or not user.check_password(password):
             return None
+        if user.email and user.email.lower() in settings.admin_emails and not user.is_admin:
+            user.is_admin = True
+            user.is_verified = True
+            db.commit()
+            db.refresh(user)
         return user
 
     @staticmethod

@@ -17,10 +17,15 @@ PORT=7860
 DATABASE_URL=sqlite:////data/ohmatt.db
 SECRET_KEY=replace-with-a-long-random-secret
 JWT_SECRET_KEY=replace-with-a-different-long-random-secret
+ADMIN_EMAILS=admin@example.com
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-temporary-password
 BACKEND_CORS_ORIGINS=https://your-vercel-app.vercel.app
 NVIDIA_API_KEY=replace-with-your-nvidia-api-key
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 ```
+
+On the first production boot, `BOOTSTRAP_ADMIN_EMAIL` creates or promotes that account to admin and sets its password. After you confirm login works, rotate/remove `BOOTSTRAP_ADMIN_PASSWORD` if you do not want startup to keep resetting that password.
 
 For beta, SQLite can work with Hugging Face persistent storage mounted at `/data`.
 For a larger beta, switch `DATABASE_URL` to a managed Postgres/MySQL database.

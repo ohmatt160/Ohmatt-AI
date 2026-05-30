@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(default="your-secret-key", env="SECRET_KEY")
     JWT_SECRET_KEY: str = Field(default="your-jwt-secret", env="JWT_SECRET_KEY")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    ADMIN_EMAILS: str = Field(default="", env="ADMIN_EMAILS")
+    BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_EMAIL")
+    BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PASSWORD")
     
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./test.db", env="DATABASE_URL")
@@ -83,6 +86,17 @@ class Settings(BaseSettings):
         ]
 
     @property
+    def admin_emails(self) -> set[str]:
+        emails = {
+            email.strip().lower()
+            for email in self.ADMIN_EMAILS.split(",")
+            if email.strip()
+        }
+        if self.BOOTSTRAP_ADMIN_EMAIL:
+            emails.add(self.BOOTSTRAP_ADMIN_EMAIL.strip().lower())
+        return emails
+
+    @property
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"
 
@@ -100,6 +114,8 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be set to a secure value in production")
             if not self.cors_origins:
                 raise ValueError("BACKEND_CORS_ORIGINS must include your frontend URL in production")
+            if self.BOOTSTRAP_ADMIN_EMAIL and not self.BOOTSTRAP_ADMIN_PASSWORD:
+                raise ValueError("BOOTSTRAP_ADMIN_PASSWORD is required when BOOTSTRAP_ADMIN_EMAIL is set")
         return self
     
     class Config:

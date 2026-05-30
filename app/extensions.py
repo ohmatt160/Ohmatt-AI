@@ -50,5 +50,53 @@ def init_extensions(app=None):
     try:
         Base.metadata.create_all(bind=engine)
         print("[OK] Database tables created")
+        bootstrap_admin_user()
     except Exception as e:
         print(f"[WARNING] Could not create all tables: {e}")
+
+
+def bootstrap_admin_user():
+    if not settings.BOOTSTRAP_ADMIN_EMAIL:
+        return
+
+    from app.models.user import User
+
+    email = settings.BOOTSTRAP_ADMIN_EMAIL.strip().lower()
+    username = email.split("@")[0]
+    user = db_session.query(User).filter(User.email == email).first()
+
+    if not user:
+        user = User(
+            username=username,
+            email=email,
+            timezone="UTC",
+            is_admin=True,
+            is_verified=True,
+            preferences={
+                "currency": "USD",
+                "date_format": "YYYY-MM-DD",
+                "notifications": True,
+                "email_alerts": True,
+                "transaction_alerts": True,
+                "two_factor_enabled": False,
+            },
+        )
+        user.set_password(settings.BOOTSTRAP_ADMIN_PASSWORD)
+        db_session.add(user)
+        db_session.commit()
+        print(f"[OK] Bootstrap admin created: {email}")
+        return
+
+    changed = False
+    if not user.is_admin:
+        user.is_admin = True
+        changed = True
+    if not user.is_verified:
+        user.is_verified = True
+        changed = True
+    if settings.BOOTSTRAP_ADMIN_PASSWORD:
+        user.set_password(settings.BOOTSTRAP_ADMIN_PASSWORD)
+        changed = True
+    if changed:
+        db_session.commit()
+        print(f"[OK] Bootstrap admin updated: {email}")
