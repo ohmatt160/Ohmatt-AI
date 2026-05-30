@@ -6,6 +6,7 @@ from app.extensions import get_db, db_session
 from app.models.country import Country
 from app.models.continent import Continent
 from app.models.language import Language
+from app.services.geo_seed import seed_geo_data as seed_geo_records
 
 router = APIRouter(prefix="/geo", tags=["geography"])
 
@@ -184,37 +185,8 @@ async def get_language(language_code: str, db: Session = Depends(get_db)):
 @router.post("/seed")
 async def seed_geo_data():
     """Seed countries and languages"""
-    countries = [
-        {"code": "NG", "name": "Nigeria", "continent": "AF", "currency": "NGN", "timezone": "Africa/Lagos",
-         "language": "en"},
-        {"code": "GH", "name": "Ghana", "continent": "AF", "currency": "GHS", "timezone": "Africa/Accra",
-         "language": "en"},
-        {"code": "KE", "name": "Kenya", "continent": "AF", "currency": "KES", "timezone": "Africa/Nairobi",
-         "language": "en"},
-        {"code": "ZA", "name": "South Africa", "continent": "AF", "currency": "ZAR", "timezone": "Africa/Johannesburg",
-         "language": "en"},
-        {"code": "US", "name": "United States", "continent": "NA", "currency": "USD", "timezone": "America/New_York",
-         "language": "en", "plaid_supported": True},
-        {"code": "GB", "name": "United Kingdom", "continent": "EU", "currency": "GBP", "timezone": "Europe/London",
-         "language": "en", "plaid_supported": True},
-        {"code": "CA", "name": "Canada", "continent": "NA", "currency": "CAD", "timezone": "America/Toronto",
-         "language": "en", "plaid_supported": True},
-    ]
-
-    languages = [
-        {"code": "en", "name": "English", "native_name": "English"},
-        {"code": "fr", "name": "French", "native_name": "Français"},
-        {"code": "es", "name": "Spanish", "native_name": "Español"},
-        {"code": "ar", "name": "Arabic", "native_name": "العربية"},
-    ]
-
-    for c in countries:
-        if not db_session.query(Country).filter_by(code=c["code"]).first():
-            db_session.add(Country(**c))
-
-    for l in languages:
-        if not db_session.query(Language).filter_by(code=l["code"]).first():
-            db_session.add(Language(**l))
-
-    db_session.commit()
-    return {"message": f"Seeded {len(countries)} countries and {len(languages)} languages"}
+    result = seed_geo_records()
+    return {
+        "message": "Geography data seeded",
+        **result,
+    }

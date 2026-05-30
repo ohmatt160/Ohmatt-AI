@@ -50,9 +50,25 @@ def init_extensions(app=None):
     try:
         Base.metadata.create_all(bind=engine)
         print("[OK] Database tables created")
+        seed_geo_records()
         bootstrap_admin_user()
     except Exception as e:
         print(f"[WARNING] Could not create all tables: {e}")
+
+
+def seed_geo_records():
+    if not settings.AUTO_SEED_GEO:
+        return
+
+    from app.services.geo_seed import seed_geo_data
+
+    result = seed_geo_data()
+    print(
+        "[OK] Geography data ready: "
+        f"{result['totals']['countries']} countries, "
+        f"{result['totals']['languages']} languages, "
+        f"{result['totals']['continents']} continents"
+    )
 
 
 def bootstrap_admin_user():

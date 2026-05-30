@@ -14,6 +14,7 @@ Set these Space secrets:
 ```env
 ENV=production
 PORT=7860
+AUTO_SEED_GEO=true
 DATABASE_URL=sqlite:////data/ohmatt.db
 SECRET_KEY=replace-with-a-long-random-secret
 JWT_SECRET_KEY=replace-with-a-different-long-random-secret

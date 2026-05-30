@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DESCRIPTION: str = "A personal finance API with bank integration"
     API_V1_STR: str = "/api/v1"
     ENV: str = Field(default="development", env="ENV")
+    AUTO_SEED_GEO: bool = Field(default=True, env="AUTO_SEED_GEO")
     
     # Security
     SECRET_KEY: str = Field(default="your-secret-key", env="SECRET_KEY")
