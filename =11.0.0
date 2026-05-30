@@ -1,0 +1,5 @@
+Requirement already satisfied: plaid-python in .\.venv\Lib\site-packages (39.2.0)
+Requirement already satisfied: urllib3>=1.25.3 in .\.venv\Lib\site-packages (from plaid-python) (2.5.0)
+Requirement already satisfied: python-dateutil in .\.venv\Lib\site-packages (from plaid-python) (2.9.0.post0)
+Requirement already satisfied: nulltype in .\.venv\Lib\site-packages (from plaid-python) (2.3.1)
+Requirement already satisfied: six>=1.5 in .\.venv\Lib\site-packages (from python-dateutil->plaid-python) (1.17.0)

@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { ThemeToggle } from "./ThemeToggle";
@@ -11,11 +12,8 @@ import {
   ArrowRight,
 } from "lucide-react";
 
-interface LandingPageProps {
-  onNavigate: (page: string) => void;
-}
-
-export function LandingPage({ onNavigate }: LandingPageProps) {
+export function LandingPage() {
+  const navigate = useNavigate();
   const features = [
     {
       icon: Sparkles,
@@ -65,12 +63,12 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               <ThemeToggle />
               <Button
                 variant="ghost"
-                onClick={() => onNavigate("login")}
+                onClick={() => navigate("/login")}
                 className="hidden sm:inline-flex"
               >
                 Login
               </Button>
-              <Button onClick={() => onNavigate("register")}>Sign Up</Button>
+              <Button onClick={() => navigate("/register")}>Sign Up</Button>
             </div>
           </div>
         </div>
@@ -92,7 +90,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Button
               size="lg"
-              onClick={() => onNavigate("register")}
+              onClick={() => navigate("/register")}
               className="w-full sm:w-auto bg-primary hover:bg-primary/90 shadow-lg hover:shadow-xl transition-all duration-200 group"
             >
               Get Started Free
@@ -101,7 +99,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
             <Button
               size="lg"
               variant="outline"
-              onClick={() => onNavigate("dashboard")}
+              onClick={() => navigate("/dashboard")}
               className="w-full sm:w-auto"
             >
               View Demo
@@ -157,7 +155,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
             </p>
             <Button
               size="lg"
-              onClick={() => onNavigate("register")}
+              onClick={() => navigate("/register")}
               className="bg-primary hover:bg-primary/90 shadow-lg hover:shadow-xl transition-all duration-200"
             >
               Start Your Free Trial

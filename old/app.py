@@ -2,13 +2,13 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List
 
 import plaid
-from flask import request, jsonify, render_template, current_app
+from flask import request, jsonify, render_template, current_app, send_from_directory
+import os
 from flask_jwt_extended import jwt_required, create_access_token, get_jwt_identity
 
 from sqlalchemy import create_engine
 from flask_restful import Resource, marshal_with, reqparse, fields
 
-from sqlalchemy.sql.functions import user
 
 from config import plaid_client, configuration, logger, app, api
 from model import User, Transaction, Activity, Messages, Tasks, Base, db, BankTransaction, BankAccount, \
@@ -26,8 +26,8 @@ user_field = {
     'id': fields.Integer,
     'username': fields.String,
     'email': fields.String,
-    'country_code': fields.String,
-    'language_code': fields.String,
+    'country_id': fields.Integer,
+    'language_id': fields.Integer,
     'is_verified': fields.Boolean
 }
 
@@ -52,9 +52,17 @@ language_field = {
     'native_name': fields.String
 }
 
-@app.route('/home')
+@app.route('/')
 def home():
     return render_template('index.html')
+
+@app.route('/home')
+def home_alt():
+    return render_template('index.html')
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    return send_from_directory(os.path.join(app.root_path, 'templates', 'assets'), filename)
 
 new_task={
     'id':fields.Integer,
@@ -83,17 +91,20 @@ class TasksAPI(Resource):
             if not session:
                 return jsonify({'message': 'Session creation failed'}), 500
 
-            new_task = Tasks(task=task_text, date=task_datetime, time=task_datetime)
-            session.add(new_task)
-            session.commit()
-            session.close()
-            log_activity(user, "task creation")
-            return {'message':'Task created!'}
+            try:
+                new_task = Tasks(task=task_text, date=task_datetime, time=task_datetime)
+                session.add(new_task)
+                session.commit()
+                log_activity(user, "task creation")
+                return {'message':'Task created!'}
+            finally:
+                session.close()
         except Exception as e:
-            return {'message': f'failed! {e}'},500
+            return {'message': 'An error occurred while creating the task'}, 500
     @jwt_required()
     # @marshal_with(new_task)
     def get(self):
+        session = None
         try:
             session = get_user_task_session()
             # user=User.query.filter_by(id=get_jwt_identity()).first()
@@ -106,13 +117,15 @@ class TasksAPI(Resource):
                 "date": t.date.isoformat() if t.date else None,
                 "time": t.time.isoformat() if t.time else None
             } for t in tasks]
-            session.close()
             log_activity(user, "User task view")
             return {"tasks": result}, 200
 
 
         except Exception as e:
-            return {'message': f'failed! {e}'},500
+            return {'message': 'An error occurred while retrieving tasks'}, 500
+        finally:
+            if session:
+                session.close()
 api.add_resource(TasksAPI, '/tasks')
 
 
@@ -124,24 +137,24 @@ class UserRegister(Resource):
             if User.query.filter((User.username == data['username']) | (User.email == data['email'])).first():
                 return {"message": "Username or email already exists"}, 400
 
-                # Validate country
-                country = Country.query.filter_by(code=args['country_code'].upper()).first()
-                if not country:
-                    return {"message": "Invalid country code"}, 400
+            # Validate country
+            country = Country.query.filter_by(code=data.get('country_id', '').upper()).first()
+            if not country:
+                return {"message": "Invalid country code"}, 400
 
-                # Validate language
-                language = Language.query.filter_by(code=args['language_code'].lower()).first()
-                if not language:
-                    return {"message": "Invalid language code"}, 400
+            # Validate language
+            language = Language.query.filter_by(code=data.get('language_id', '').lower()).first()
+            if not language:
+                return {"message": "Invalid language code"}, 400
 
-                # Get continent
-                continent = Continent.query.filter_by(code=country.continent).first()
+            # Get continent
+            continent = Continent.query.filter_by(code=country.continent).first()
 
             db_name = f"{data['username']}_tasks.db"
             new_user = User(username=data['username'], email=data['email'], db_name=db_name,
-                country_code=country.code,
-                continent_code=continent.code if continent else None,
-                language_code=language.code,
+                country_id=country.id,
+                continent_id=continent.id if continent else None,
+                language_id=language.id,
                 timezone=data['timezone'])
             new_user.set_password(data['password'])
             db.session.add(new_user)
@@ -158,13 +171,13 @@ class UserRegister(Resource):
                 "user": {
                     "username": new_user.username,
                     "email": new_user.email,
-                    "country": country.code,
-                    "language": language.code,
+                    "country_id": country.id,
+                    "language_id": language.id,
                     "timezone": new_user.timezone
                 }}, 201
 
         except Exception as e:
-            return jsonify({'message': f'Error: {str(e)}' })
+            return jsonify({'message': 'An error occurred during registration' })
 api.add_resource(UserRegister, '/register')
 
 class VerifyAccount(Resource):
@@ -187,7 +200,7 @@ class VerifyAccount(Resource):
             log_activity(user, "Email Verification")
             return {"message": "Account verified successfully"}, 200
         except Exception as e:
-            return jsonify({'message': f'Error: {str(e)}' })
+            return jsonify({'message': 'An error occurred during verification' })
 api.add_resource(VerifyAccount, '/verify')
 
 class UserLogin(Resource):
@@ -202,8 +215,8 @@ class UserLogin(Resource):
                 "id": user.id,
                 "username": user.username,
                 "email": user.email,
-                "country": user.country_code,
-                "language": user.language_code,
+                "country": user.country_id,
+                "language": user.language_id,
                 "timezone": user.timezone,
                 "is_admin": user.is_admin
             }
@@ -239,7 +252,7 @@ class UserLogin(Resource):
             #     return jsonify({'message': 'User login failed\n username or email is incorrect'})
         except Exception as e:
 
-            return jsonify({'message': f'Error: {str(e)}' })
+            return jsonify({'message': 'An error occurred during login' })
 api.add_resource(UserLogin, '/login')
 
 
@@ -249,32 +262,28 @@ class ProfileResource(Resource):
         return {}
     @jwt_required()
     def get(self):
-        current_user=get_jwt_identity()
-        user = User.query.filter_by(username=current_user).first()
-        if not current_user:
+        current_identity=get_jwt_identity()
+        user = User.query.filter_by(username=current_identity).first()
+        if not user:
             return {"message": "Unauthorized, no identity in token"}, 401
 
             # Get user's country and language details
-        country = Country.query.filter_by(code=user.country_code).first() if user.country_code else None
-        language = Language.query.filter_by(code=user.language_code).first() if user.language_code else None
-
-
-
-        # user=User.query.filter_by(username=current_user).first()
-        current_identity = get_jwt_identity()
-        user = User.query.filter_by(username=current_identity).first()
+        country = Country.query.filter_by(id=user.country_id).first() if user.country_id else None
+        language = Language.query.filter_by(id=user.language_id).first() if user.language_id else None
         session = get_user_task_session()
         if session:
-            tasks =  session.query(Tasks).all()
-            result = [{
-                "id": t.id,
-                "task": t.task,
-                "date": t.date.isoformat() if t.date else None,
-                "time": t.time.isoformat() if t.time else None
-            } for t in tasks]
-            session.close()
-            log_activity(user, "Task Log")
-            return {"user": user.username, "tasks": result}, 200
+            try:
+                tasks =  session.query(Tasks).all()
+                result = [{
+                    "id": t.id,
+                    "task": t.task,
+                    "date": t.date.isoformat() if t.date else None,
+                    "time": t.time.isoformat() if t.time else None
+                } for t in tasks]
+                log_activity(user, "Task Log")
+                return {"user": user.username, "tasks": result}, 200
+            finally:
+                session.close()
 
         return jsonify({
             "user": {
@@ -282,12 +291,12 @@ class ProfileResource(Resource):
                 "username": user.username,
                 "email": user.email,
                 "country": {
-                    "code": user.country_code,
+                    "id": user.country_id,
                     "name": country.name if country else None,
                     "currency": country.currency if country else None
                 } if country else None,
                 "language": {
-                    "code": user.language_code,
+                    "id": user.language_id,
                     "name": language.name if language else None
                 } if language else None,
                 "timezone": user.timezone,
@@ -311,15 +320,18 @@ class ProfileResource(Resource):
 
             session = get_user_task_session()
             if session:
-                new_task = Tasks(task=task_text, date=task_datetime, time=task_datetime)
-                session.add(new_task)
-                session.commit()
-                log_activity(user, "Task added")
-                return {'message': 'Task created!'}
+                try:
+                    new_task = Tasks(task=task_text, date=task_datetime, time=task_datetime)
+                    session.add(new_task)
+                    session.commit()
+                    log_activity(user, "Task added")
+                    return {'message': 'Task created!'}
+                finally:
+                    session.close()
             else:
-                return {'message': 'User login failed'}, 401
+                return {'message': 'Failed to create task'}, 401
         except Exception as e:
-            return {'message': f'Error: {str(e)}' }
+            return {'message': 'An error occurred while creating the task' }
 api.add_resource(ProfileResource, '/profile')
 
 class Users(Resource):
@@ -333,15 +345,20 @@ api.add_resource(Users, '/')
 class PasswordResetResource(Resource):
     @jwt_required()
     def post(self):
-        email = request.json.get('email')
-        user = User.query.filter_by(email=email).first()
-        if not user:
+        # Get the current user from JWT identity - only allow password reset for own email
+        current_identity = get_jwt_identity()
+        current_user = User.query.filter_by(username=current_identity).first()
+        
+        if not current_user:
             return jsonify({"message": "User not found"}), 404
+        
+        # Use the current user's email - don't allow specifying arbitrary emails
+        email = current_user.email
 
-        token = generate_token(user.email)
-        log_activity(user, "Requested password reset")
+        token = generate_token(email)
+        log_activity(current_user, "Requested password reset")
         # reset_url = f"http://localhost:5000/reset-password/{token}"
-        send_email(user.email, "Password Reset", f"Your password reset token: {token}")
+        send_email(email, "Password Reset", f"Your password reset token: {token}")
 
         return {"message": "Check your email for password reset link"}, 200
     def put(self):
@@ -366,7 +383,7 @@ class PasswordResetResource(Resource):
             return {"message": "Password updated successfully"}, 200
 
         except Exception as e:
-            return {"message": f"Error: {str(e)}"}, 500
+            return {"message": "An error occurred while resetting password"}, 500
 api.add_resource(PasswordResetResource, '/password-reset')
 
 class ActivityLogList(Resource):
@@ -420,6 +437,8 @@ api.add_resource(ActivityLogList, '/activity-logs')
 class ViewMessages(Resource):
     @admin_required
     def get(self):
+        current_identity = get_jwt_identity()
+        user = User.query.filter_by(username=current_identity).first()
         messages = Messages.query.order_by(Messages.timestamp.desc()).all()
         log_activity(user, "View Messages")
 
@@ -433,6 +452,8 @@ class ViewMessages(Resource):
             } for msg in messages
         ])
     def delete(self,message_id):
+        current_identity = get_jwt_identity()
+        user = User.query.filter_by(username=current_identity).first()
         message = Messages.query.get(message_id)
         if not message:
             return {'message': 'Message not found'}, 404
@@ -590,7 +611,7 @@ class TransactionAPI(Resource):
                 )
                 log_activity(user, f"Fetched transaction {t['description']}")
         except Exception as e:
-            print(f"⚠️ Failed to fetch bank transactions for {user.username}: {e}")
+            print(f"Failed to fetch bank transactions for {user.username}: {e}")
 
 api.add_resource(TransactionAPI, "/transactions")
 
@@ -663,14 +684,14 @@ class CreateLinkToken(Resource):
         if not user:
             return {"message": "User not found"}, 404
 
-        if not user.country_code:
+        if not user.country_id:
             return {"message": "User country not set"}, 400
 
          # Check if Plaid supports user's country
-        country = Country.query.filter_by(code=user.country_code).first()
+        country = Country.query.filter_by(code=user.country_id).first()
         if not country or not country.plaid_supported:
             return {
-                "message": f"Plaid not available in {user.country_code}. Please use alternative banking method."}, 400
+                "message": f"Plaid not available in {user.country_id}. Please use alternative banking method."}, 400
 
         api_client = ApiClient(configuration)
         plaid_client = plaid_api.PlaidApi(api_client)
@@ -705,10 +726,10 @@ class ExchangePublicToken(Resource):
         if not user:
             return {"message": "User not found"}, 404
 
-        if not user.country_code:
+        if not user.country_id:
             return {"message": "User country not set"}, 400
 
-        country = Country.query.filter_by(code=user.country_code).first()
+        country = Country.query.filter_by(code=user.country_id).first()
         user_currency = country.currency if country else None
 
         exchange_response = plaid_client.Item.public_token.exchange(public_token)
@@ -737,7 +758,7 @@ class ExchangePublicToken(Resource):
             # Store accounts with proper currency
             for account in accounts_response.accounts:
                 # Use account's currency or fallback to user's country currency
-                account_currency = account.balances.iso_currency_code or user_currency
+                account_currency = account.balances.iso_currenc_id or user_currency
 
                 bank_account = BankAccount(
                     user_id=user.id,
@@ -748,7 +769,7 @@ class ExchangePublicToken(Resource):
                     balance_available=account.balances.available,
                     balance_current=account.balances.current,
                     currency=account_currency,
-                    country_code=user.country_code
+                    country_code=user.country_id
                 )
                 db.session.add(bank_account)
 
@@ -1075,7 +1096,10 @@ def fetch_transactions(user_id, access_token, days=30):
                     db.session.add(bank_txn)
 
         db.session.commit()
-        log_activity(user, "fetch transactions")
+        # Query user for activity logging
+        user = User.query.filter_by(id=user_id).first()
+        if user:
+            log_activity(user, "fetch transactions")
 
     except Exception as e:
         print(f"Error fetching transactions: {e}")
@@ -1653,7 +1677,7 @@ class UnifiedBankConnectResource(Resource):
 
                 # Verify account
                 if hasattr(provider, 'verify_bank_account'):
-                    result = provider.verify_bank_account(account_number, bank_code, user.country_code)
+                    result = provider.verify_bank_account(account_number, bank_code, user.country_id)
 
                     if result.get('success'):
                         # Store connection
@@ -1694,7 +1718,7 @@ class UnifiedBankConnectResource(Resource):
 
             else:
                 # Other providers (OAuth flow)
-                link_data = provider.create_link_token(str(user.id), user.country_code)
+                link_data = provider.create_link_token(str(user.id), user.country_id)
 
                 return {
                     "success": True,
@@ -1861,21 +1885,21 @@ class GlobalBankConnectResource(Resource):
         if not user:
             return {"success": False, "message": "User not found"}, 404
 
-        if not user.country_code:
+        if not user.country_id:
             return {"success": False, "message": "User country not set"}, 400
 
-        country = Country.query.filter_by(code=user.country_code).first()
+        country = Country.query.filter_by(code=user.country_id).first()
         if not country:
             return {"success": False, "message": "Invalid country code"}, 400
 
         # Get available providers
-        providers = ProviderRegistry.get_providers_for_country(user.country_code)
+        providers = ProviderRegistry.get_providers_for_country(user.country_id)
 
         if not providers:
             return {
                 "success": False,
                 "message": f"No banking providers available for {country.name}",
-                "country": user.country_code
+                "country": user.country_id
             }, 400
 
         # Get provider details
@@ -1902,7 +1926,7 @@ class GlobalBankConnectResource(Resource):
         return {
             "success": True,
             "country": {
-                "code": user.country_code,
+                "code": user.country_id,
                 "name": country.name,
                 "currency": country.currency
             },
@@ -1923,6 +1947,10 @@ def seed_geo_data():
         # db.session.add(admin)
         # db.session.commit()
         # print("✅ Admin user created")
+        
+        # Create all tables BEFORE querying
+        db.create_all()
+        
         me = User.query.filter_by(username="Ohmatt").first()
         if me:
             me.is_admin = True
@@ -2140,5 +2168,5 @@ def seed_geo_data():
 #         print("User not found ❌")
 #     db.create_all()
 if __name__ == '__main__':
-    app.run(debug=True)
     seed_geo_data()
+    app.run(debug=True)

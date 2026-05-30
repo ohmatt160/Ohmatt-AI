@@ -1,49 +1,58 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { ThemeToggle } from "./ThemeToggle";
 import {
-  Sparkles,
-  Eye,
-  EyeOff,
-  Mail,
-  Lock,
-  User,
-  ArrowLeft,
-  CheckCircle2,
+  Sparkles, Eye, EyeOff, Mail, Lock, User, ArrowLeft, Globe, MapPin,
 } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
-import { Progress } from "./ui/progress";
+import { api } from "../api/config";
 
-interface RegisterPageProps {
-  onNavigate: (page: string) => void;
-}
-
-export function RegisterPage({ onNavigate }: RegisterPageProps) {
+export function RegisterPage() {
+  const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [countries, setCountries] = useState<Country[]>([]);
+  const [languages, setLanguages] = useState<Language[]>([]);
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     password: "",
     confirmPassword: "",
+    country_id: "",
+    language_id: "",
+    timezone: "UTC",
   });
 
-  const passwordStrength = () => {
-    const password = formData.password;
-    let strength = 0;
-    if (password.length >= 8) strength += 25;
-    if (/[a-z]/.test(password) && /[A-Z]/.test(password)) strength += 25;
-    if (/\d/.test(password)) strength += 25;
-    if (/[^a-zA-Z\d]/.test(password)) strength += 25;
-    return strength;
-  };
+  useEffect(() => {
+    const fetchGeoData = async () => {
+      try {
+        const [countriesData, languagesData] = await Promise.all([
+          api.get("/countries"),
+          api.get("/languages"),
+        ]);
+        setCountries(countriesData.countries || countriesData);
+        setLanguages(languagesData.languages || languagesData);
+      } catch (err) {
+        console.error("Failed to load geo data:", err);
+      }
+    };
+    fetchGeoData();
+  }, []);
 
-  const strength = passwordStrength();
+  const handleCountryChange = (countryCode: string) => {
+    const selectedCountry = countries.find(c => c.code === countryCode);
+    setFormData({
+      ...formData,
+      country_id: countryCode,
+      timezone: selectedCountry?.timezone || "UTC",
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,25 +66,13 @@ export function RegisterPage({ onNavigate }: RegisterPageProps) {
     setLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/register", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+      await api.register({
         username: formData.name,
         email: formData.email,
         password: formData.password,
-      }),
-    });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || "Registration failed");
-      }
-
-      // Registration success → navigate to login or dashboard
-      onNavigate("login");
+      });
+      // Success - navigate to login
+      navigate("/login");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -87,11 +84,11 @@ export function RegisterPage({ onNavigate }: RegisterPageProps) {
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-md relative z-10">
         <div className="flex items-center justify-between mb-8">
-          <Button
-            variant="ghost"
-            onClick={() => onNavigate("landing")}
-            className="gap-2"
-          >
+<Button
+                variant="ghost"
+                onClick={() => navigate("/")}
+                className="gap-2"
+              >
             <ArrowLeft className="w-4 h-4" />
             Back
           </Button>
@@ -135,6 +132,52 @@ export function RegisterPage({ onNavigate }: RegisterPageProps) {
                   required
                   className="pl-10"
                 />
+              </div>
+            </div>
+
+            {/* Country Field */}
+            <div className="space-y-2">
+              <Label htmlFor="country_id">Country</Label>
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <select
+                  id="country_id"
+                  value={formData.country_id}
+                  onChange={(e) => handleCountryChange(e.target.value)}
+                  required
+                  className="w-full pl-10 pr-3 py-2 rounded-md border border-input bg-background text-foreground"
+                >
+                  <option value="">Select your country</option>
+                  {countries.map((country) => (
+                    <option key={country.code} value={country.code}>
+                      {country.name} ({country.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Language Field */}
+            <div className="space-y-2">
+              <Label htmlFor="language_id">Language</Label>
+              <div className="relative">
+                <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <select
+                  id="language_id"
+                  value={formData.language_id}
+                  onChange={(e) =>
+                    setFormData({ ...formData, language_id: e.target.value })
+                  }
+                  required
+                  className="w-full pl-10 pr-3 py-2 rounded-md border border-input bg-background text-foreground"
+                >
+                  <option value="">Select your language</option>
+                  {languages.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.name} ({lang.native_name})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -228,7 +271,7 @@ export function RegisterPage({ onNavigate }: RegisterPageProps) {
             <p className="text-sm text-muted-foreground">
               Already have an account?{" "}
               <button
-                onClick={() => onNavigate("login")}
+                onClick={() => navigate("/login")}
                 className="text-primary hover:underline font-medium"
               >
                 Sign in

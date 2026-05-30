@@ -1,7 +1,7 @@
 instance/
 
-tired.py
-config.py
+old/tired.py
+old/config.py
 ohma_tasks.db
 resources.py
 spec_tasks.db
@@ -65,12 +65,18 @@ out/
 build/
 dist/
 
+templates/
+static/
+old/
+
 # Environment variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+!.env.example
+!.env.production.example
 
 # Logs
 *.log
@@ -103,4 +109,4 @@ htmlcov/
 
 # SQLite
 *.sqlite
-*.pkl
+

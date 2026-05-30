@@ -141,48 +141,76 @@ class Transaction(db.Model):
 
 # Add these new models to your existing models
 class BankAccount(db.Model):
+    __tablename__ = 'bank_account'
+
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    # Institution info
     institution_name = db.Column(db.String(100), nullable=False)
     account_name = db.Column(db.String(100), nullable=False)
-    account_type = db.Column(db.String(50), nullable=False)
-    account_id = db.Column(db.String(100), nullable=False)  # Plaid account ID
-    balance_available = db.Column(db.Float, default=0.0)
-    balance_current = db.Column(db.Float, default=0.0)
-    is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    user = db.relationship('User', backref=db.backref('bank_accounts', lazy=True))
-
-    connection_id = db.Column(db.Integer, db.ForeignKey('bank_connection.id'), nullable=False)
-    name = db.Column(db.String(200))
     official_name = db.Column(db.String(200))
-    type = db.Column(db.String(50))  # checking, savings, credit, etc.
+    name = db.Column(db.String(200))
+
+    # Account info
+    account_type = db.Column(db.String(50), nullable=False)  # checking, savings, credit, etc.
+    type = db.Column(db.String(50))
     subtype = db.Column(db.String(50))
+    account_id = db.Column(db.String(100), nullable=False)  # Provider's account ID
+
+    # Connection info
+    connection_id = db.Column(db.Integer, db.ForeignKey('bank_connection.id'))
 
     # Balance information
-
-    balance_limit = db.Column(db.Numeric(15, 2))
-    currency = db.Column(db.String(10))
+    balance_available = db.Column(db.Float, default=0.0)
+    balance_current = db.Column(db.Float, default=0.0)
+    balance_limit = db.Column(db.Float)
+    currency = db.Column(db.String(10), default='USD')
 
     # Metadata
-    last_updated = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = db.relationship('User', backref=db.backref('bank_accounts', lazy=True))
+
+
 
 
 class BankTransaction(db.Model):
+    __tablename__ = 'bank_transaction'
+
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     bank_account_id = db.Column(db.Integer, db.ForeignKey('bank_account.id'))
-    transaction_id = db.Column(db.String(100), unique=True)  # Plaid transaction ID
+
+    # Transaction info
+    transaction_id = db.Column(db.String(100), unique=True)  # Provider's transaction ID
     description = db.Column(db.String(255), nullable=False)
-    amount = db.Column(db.Float, nullable=False)
+    # amount = db.Column(db.Numeric(15, 2), nullable=False)
     date = db.Column(db.DateTime, nullable=False)
+
+    # Categorization
     category = db.Column(db.String(100))
-    pending = db.Column(db.Boolean, default=False)
     merchant_name = db.Column(db.String(100))
 
-    user = db.relationship('User', backref=db.backref('bank_transactions', lazy=True))
-    bank_account = db.relationship('BankAccount', backref=db.backref('transactions', lazy=True))
+    # Status
+    pending = db.Column(db.Boolean, default=False)
+    currency = db.Column(db.String(10), default='USD')
+
+    # Metadata
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relationships - FIXED: Use unique backref names
+    user = db.relationship('User', backref=db.backref('user_bank_transactions', lazy=True))
+
+    # FIXED: Use a unique backref name
+    bank_account = db.relationship('BankAccount', backref=db.backref('account_transactions', lazy=True))
+
+
+    amount = db.Column(db.Float, nullable=False)
+
 
 class Tasks(Base):
     __tablename__='tasks'

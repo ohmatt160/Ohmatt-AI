@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -7,11 +8,10 @@ import { ThemeToggle } from "./ThemeToggle";
 import { Sparkles, Eye, EyeOff, Mail, Lock, ArrowLeft } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 
-interface LoginPageProps {
-  onNavigate: (page: string) => void;
-}
+import { api } from "../api/config";
 
-export function LoginPage({ onNavigate }: LoginPageProps) {
+export function LoginPage() {
+  const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,25 +24,11 @@ export function LoginPage({ onNavigate }: LoginPageProps) {
     setLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:5000/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email, // Flask expects 'username', not 'email'
-          password: password,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        localStorage.setItem("token", data.access_token);
-        onNavigate("dashboard");
-      } else {
-        setError(data.message || "Invalid login credentials");
-      }
-    } catch (err) {
-      setError("Unable to connect to server. Please try again.");
+      const data = await api.login(email, password);
+      localStorage.setItem("token", data.access_token);
+      navigate("/dashboard");
+    } catch (err: any) {
+      setError(err.message || "Unable to connect to server. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -59,11 +45,11 @@ export function LoginPage({ onNavigate }: LoginPageProps) {
       <div className="w-full max-w-md relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <Button
-            variant="ghost"
-            onClick={() => onNavigate("landing")}
-            className="gap-2"
-          >
+<Button
+                variant="ghost"
+                onClick={() => navigate("/")}
+                className="gap-2"
+              >
             <ArrowLeft className="w-4 h-4" />
             Back
           </Button>
@@ -226,7 +212,7 @@ export function LoginPage({ onNavigate }: LoginPageProps) {
             <p className="font-['Inter'] text-sm text-muted-foreground">
               Don't have an account?{" "}
               <button
-                onClick={() => onNavigate("register")}
+                onClick={() => navigate("/register")}
                 className="text-primary hover:underline font-medium"
               >
                 Sign up for free
