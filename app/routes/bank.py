@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -22,6 +22,7 @@ from app.providers.mono_provider import MonoProvider
 from app.providers.paystack_provider import PaystackProvider
 from app.providers.plaid_provider import PlaidProvider
 from app.utils.auth import get_current_user
+from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/bank", tags=["banking"])
 
@@ -326,6 +327,7 @@ async def get_connections(
 @router.post("/connect")
 async def connect_bank(
     data: BankConnectRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -341,6 +343,15 @@ async def connect_bank(
     if link_data.get("error"):
         raise HTTPException(400, link_data["error"])
 
+    log_activity(
+        request,
+        current_user.id,
+        "bank_connection_start",
+        entity_type="bank_connection",
+        description=f"Started bank connection for {provider.name}",
+        metadata={"provider": provider.api_name},
+    )
+
     return {
         "provider": provider.api_name,
         "provider_name": provider.name,
@@ -352,6 +363,7 @@ async def connect_bank(
 @router.post("/exchange-token")
 async def exchange_bank_token(
     data: BankTokenExchangeRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -402,12 +414,22 @@ async def exchange_bank_token(
     accounts_data = provider_client.get_accounts(access_token)
     upsert_provider_accounts(current_user, connection, accounts_data)
     db_session.refresh(connection)
+    log_activity(
+        request,
+        current_user.id,
+        "bank_connection_complete",
+        entity_type="bank_connection",
+        entity_id=connection.id,
+        description=f"Connected {connection.institution_name}",
+        metadata={"provider": provider.api_name, "accounts": len(accounts_data or [])},
+    )
 
     return serialize_connection(connection)
 
 @router.post("/verify-account")
 async def verify_bank_account(
     data: BankAccountVerificationRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -481,12 +503,22 @@ async def verify_bank_account(
     account.last_updated = datetime.utcnow()
     db_session.commit()
     db_session.refresh(connection)
+    log_activity(
+        request,
+        current_user.id,
+        "bank_connection_complete",
+        entity_type="bank_connection",
+        entity_id=connection.id,
+        description=f"Verified and connected {data.bank_name}",
+        metadata={"provider": provider.api_name},
+    )
 
     return serialize_connection(connection)
 
 @router.post("/disconnect")
 async def disconnect_bank(
     data: BankDisconnectRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -500,6 +532,14 @@ async def disconnect_bank(
     for account in connection.accounts:
         account.is_active = False
     db_session.commit()
+    log_activity(
+        request,
+        current_user.id,
+        "bank_disconnect",
+        entity_type="bank_connection",
+        entity_id=connection.id,
+        description=f"Disconnected {connection.institution_name}",
+    )
     return {"message": "Bank disconnected successfully"}
 
 

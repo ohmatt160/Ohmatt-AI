@@ -14,6 +14,8 @@ from app.routes.auth import router as auth_router
 from app.routes.webhooks import router as webhooks_router
 from app.routes.users import router as users_router
 from app.routes.finance import router as finance_router
+from app.routes.activity import router as activity_router
+from app.routes.ai import router as ai_router
 
 
 api_router = APIRouter()
@@ -27,3 +29,5 @@ api_router.include_router(admin_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(users_router)
 api_router.include_router(finance_router)
+api_router.include_router(activity_router)
+api_router.include_router(ai_router)

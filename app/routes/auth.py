@@ -21,6 +21,7 @@ from app.utils.auth import create_access_token, verify_token, get_current_user, 
 from app.models.user import User
 from app.models.blacklist import Blacklist
 from app.schemas.user import LoginRequest
+from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -169,6 +170,14 @@ def register_user(user: UserCreate, request: Request, db: Session = Depends(get_
         "Verify your Ohmatt account",
         f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}",
     )
+    log_activity(
+        request,
+        created_user.id,
+        "registration",
+        entity_type="user",
+        entity_id=created_user.id,
+        description="User registered",
+    )
     return serialize_user(created_user)
 
 
@@ -190,6 +199,14 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             raise HTTPException(status_code=401, detail="Invalid two-factor code")
         db.commit()
     access_token = create_access_token(data={"sub": user.email})
+    log_activity(
+        request,
+        user.id,
+        "login",
+        entity_type="user",
+        entity_id=user.id,
+        description="User logged in",
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/login/form", response_model=Token, include_in_schema=False)
@@ -202,6 +219,7 @@ def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
 
 @router.post("/logout")
 def logout(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -209,6 +227,7 @@ def logout(
     blacklisted = Blacklist(jti=token, user_id=current_user.id)
     db_session.add(blacklisted)
     db_session.commit()
+    log_activity(request, current_user.id, "logout", entity_type="user", entity_id=current_user.id, description="User logged out")
     return {"message": "Logged out successfully"}
 
 
@@ -236,6 +255,7 @@ def read_current_user(current_user: User = Depends(get_current_user)):
 @router.put("/me", response_model=UserResponse)
 def update_profile(
     data: ProfileUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -262,11 +282,21 @@ def update_profile(
 
     db.commit()
     db.refresh(current_user)
+    log_activity(
+        request,
+        current_user.id,
+        "profile_update",
+        entity_type="user",
+        entity_id=current_user.id,
+        description="Profile updated",
+        metadata={"fields": list(update_data.keys())},
+    )
     return serialize_user(current_user)
 
 @router.post("/change-password")
 def change_password(
     data: ChangePasswordRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -276,6 +306,7 @@ def change_password(
     validate_password_strength(data.new_password)
     current_user.set_password(data.new_password)
     db.commit()
+    log_activity(request, current_user.id, "password_change", entity_type="user", entity_id=current_user.id, description="Password changed")
     return {"message": "Password changed successfully"}
 
 

@@ -15,6 +15,7 @@ class TransactionResponse(BaseModel):
     amount: float
     date: Optional[str]
     category: Optional[str]
+    user_category: Optional[str] = None
     ml_confidence: Optional[float]
     currency: str
     pending: bool

@@ -33,6 +33,7 @@ class AIService:
                 self.clf = RandomForestClassifier()
 
         self.top_n = 3
+        self.service_dir = service_dir
 
     def categorize_transaction(self, description: str) -> Tuple[str, float]:
         if not description:
@@ -74,6 +75,27 @@ class AIService:
                     insights.append(f" - {t.description}: ${t.amount:.2f}")
 
         return insights
+
+    def retrain_from_corrections(self, corrections: List[Transaction]) -> int:
+        rows = [
+            {
+                "description": tx.description or "",
+                "category": tx.user_category or tx.category or "Uncategorized",
+            }
+            for tx in corrections
+            if tx.description and (tx.user_category or tx.category)
+        ]
+        if not rows:
+            return 0
+
+        df = pd.DataFrame(rows)
+        self.vectorizer = TfidfVectorizer()
+        X = self.vectorizer.fit_transform(df["description"].fillna(""))
+        self.clf = RandomForestClassifier()
+        self.clf.fit(X, df["category"])
+        joblib.dump(self.vectorizer, os.path.join(self.service_dir, "vectorizer.pkl"))
+        joblib.dump(self.clf, os.path.join(self.service_dir, "transaction_model.pkl"))
+        return len(rows)
 
 
 ai_service = AIService()

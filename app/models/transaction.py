@@ -21,6 +21,7 @@ class Transaction(Base):
     merchant_name = Column(String(200))
 
     category = Column(String(100))
+    user_category = Column(String(100))
     subcategory = Column(String(100))
 
     pending = Column(Boolean, default=False)

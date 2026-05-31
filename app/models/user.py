@@ -45,7 +45,7 @@ class User(Base):
     received_messages = relationship("Messages", foreign_keys="Messages.receiver_id", back_populates="receiver")
     user_bank_transactions = relationship("BankTransaction", back_populates="user")
     insights = relationship("Insight", back_populates="user")
-    insights = relationship("Insight", back_populates="user")
+    activity_logs = relationship("ActivityLog", back_populates="user")
 
     def set_password(self, password):
         self.password_hash = hash_password(password)

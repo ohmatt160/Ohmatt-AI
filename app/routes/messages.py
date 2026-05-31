@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -11,6 +11,7 @@ from app.schemas.message import MessageCreate, MessageResponse, MessageEdit, For
 from app.utils.auth import get_current_user
 
 from app.services.ai_chat_service import ai_chat
+from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -154,6 +155,7 @@ async def unread_count(
 @router.post("", response_model=dict)
 async def send_message(
         data: MessageCreate,
+        request: Request,
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
@@ -175,6 +177,16 @@ async def send_message(
     )
     db_session.add(user_msg)
     db_session.commit()
+    db_session.refresh(user_msg)
+    log_activity(
+        request,
+        current_user.id,
+        "message_sent",
+        entity_type="message",
+        entity_id=user_msg.id,
+        description=f"Sent message to {data.receiver_username}",
+        metadata={"receiver": data.receiver_username},
+    )
 
     # If messaging AI, get smart response
     if data.receiver_username == "ai_assistant":
@@ -188,6 +200,15 @@ async def send_message(
         db_session.add(ai_msg)
         db_session.commit()
         db_session.refresh(ai_msg)
+        log_activity(
+            request,
+            current_user.id,
+            "ai_chat_interaction",
+            entity_type="message",
+            entity_id=ai_msg.id,
+            description="Personal AI chat interaction",
+            metadata={"prompt_message_id": user_msg.id, "response_message_id": ai_msg.id},
+        )
         return {
             "id": ai_msg.id,
             "sender": "ai_assistant",
@@ -198,7 +219,15 @@ async def send_message(
         }
 
     # Regular user-to-user message
-    db_session.refresh(user_msg)
+    log_activity(
+        request,
+        receiver.id,
+        "message_received",
+        entity_type="message",
+        entity_id=user_msg.id,
+        description=f"Received message from {current_user.username}",
+        metadata={"sender": current_user.username},
+    )
     return {
         "id": user_msg.id,
         "sender": current_user.username,

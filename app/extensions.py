@@ -41,6 +41,7 @@ def init_extensions(app=None):
     import app.models.bank_connection
     import app.models.bank_account
     import app.models.activity
+    import app.models.activity_log
     import app.models.bank_provider
     import app.models.bank_transaction
     import app.models.blacklist
@@ -50,11 +51,26 @@ def init_extensions(app=None):
 
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_runtime_columns()
         print("[OK] Database tables created")
         seed_geo_records()
         bootstrap_admin_user()
     except Exception as e:
         print(f"[WARNING] Could not create all tables: {e}")
+
+
+def ensure_runtime_columns():
+    if "sqlite" not in settings.DATABASE_URL:
+        return
+
+    with engine.connect() as connection:
+        transaction_columns = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()
+        }
+        if "user_category" not in transaction_columns:
+            connection.exec_driver_sql("ALTER TABLE transactions ADD COLUMN user_category VARCHAR(100)")
+            connection.commit()
 
 
 def seed_geo_records():

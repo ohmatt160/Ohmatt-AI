@@ -1,5 +1,5 @@
 # app/routes/transactions.py
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -15,16 +15,28 @@ from app.utils.auth import get_current_user
 # Add this after transaction is saved
 from app.services.insight_service import InsightService
 from app.models.insight import Insight
+from app.middleware.activity import log_activity
 
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
+
+class TransactionUpdate(BaseModel):
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    date: Optional[str] = None
+    category: Optional[str] = None
+
+
+class CategoryCorrection(BaseModel):
+    category: str = Field(..., min_length=1, max_length=100)
 
 
 
 @router.post("", response_model=dict)
 async def create_transaction(
     data: TransactionCreate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -59,6 +71,22 @@ async def create_transaction(
     db_session.commit()
     db_session.refresh(transaction)
     InsightService.generate_insights(db_session, current_user)
+    log_activity(
+        request,
+        current_user.id,
+        "transaction_create",
+        entity_type="transaction",
+        entity_id=transaction.id,
+        description=f"Created transaction: {transaction.description}",
+        metadata={"amount": transaction.amount, "category": transaction.category},
+    )
+    log_activity(
+        request,
+        current_user.id,
+        "insight_generation",
+        entity_type="insight",
+        description="Generated insights after transaction creation",
+    )
 
     # Get insights
     recent_transactions = (
@@ -115,6 +143,7 @@ async def list_transactions(
             "amount": t.amount,
             "date": t.date.isoformat() if t.date else None,
             "category": t.category,
+            "user_category": t.user_category,
             "ml_confidence": t.ml_confidence,
             "currency": t.currency or "USD",
             "pending": t.pending or False,
@@ -181,6 +210,99 @@ async def get_insights(
         }
         for i in insights
     ]
+
+
+@router.put("/{transaction_id}", response_model=dict)
+async def update_transaction(
+        transaction_id: int,
+        data: TransactionUpdate,
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+):
+    transaction = db.query(Transaction).filter_by(id=transaction_id, user_id=current_user.id).first()
+    if not transaction:
+        raise HTTPException(404, "Transaction not found")
+
+    update_data = data.dict(exclude_unset=True)
+    if "date" in update_data and update_data["date"]:
+        try:
+            update_data["date"] = datetime.strptime(update_data["date"], "%Y-%m-%d %H:%M")
+            transaction.datetime = update_data["date"]
+        except ValueError:
+            raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD HH:MM")
+
+    for field, value in update_data.items():
+        setattr(transaction, field, value)
+
+    db.commit()
+    db.refresh(transaction)
+    log_activity(
+        request,
+        current_user.id,
+        "transaction_update",
+        entity_type="transaction",
+        entity_id=transaction.id,
+        description=f"Updated transaction: {transaction.description}",
+        metadata={"fields": list(update_data.keys())},
+    )
+    return {"message": "Transaction updated", "transaction": {"id": transaction.id, "category": transaction.category}}
+
+
+@router.delete("/{transaction_id}")
+async def delete_transaction(
+        transaction_id: int,
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+):
+    transaction = db.query(Transaction).filter_by(id=transaction_id, user_id=current_user.id).first()
+    if not transaction:
+        raise HTTPException(404, "Transaction not found")
+    description = transaction.description
+    db.delete(transaction)
+    db.commit()
+    log_activity(
+        request,
+        current_user.id,
+        "transaction_delete",
+        entity_type="transaction",
+        entity_id=transaction_id,
+        description=f"Deleted transaction: {description}",
+    )
+    return {"message": "Transaction deleted"}
+
+
+@router.put("/{transaction_id}/category")
+async def correct_transaction_category(
+        transaction_id: int,
+        data: CategoryCorrection,
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+):
+    transaction = db.query(Transaction).filter_by(id=transaction_id, user_id=current_user.id).first()
+    if not transaction:
+        raise HTTPException(404, "Transaction not found")
+    previous = transaction.category
+    transaction.user_category = data.category
+    transaction.category = data.category
+    db.commit()
+    log_activity(
+        request,
+        current_user.id,
+        "ai_category_correction",
+        entity_type="transaction",
+        entity_id=transaction.id,
+        description=f"Corrected AI category from {previous or 'Uncategorized'} to {data.category}",
+        metadata={"previous_category": previous, "corrected_category": data.category},
+    )
+    return {
+        "message": "Category correction saved",
+        "id": transaction.id,
+        "category": transaction.category,
+        "user_category": transaction.user_category,
+    }
 
 
 @router.put("/insights/{insight_id}/read")
