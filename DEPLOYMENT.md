@@ -32,19 +32,16 @@ On the first production boot, `BOOTSTRAP_ADMIN_EMAIL` creates or promotes that a
 For beta, SQLite can work with Hugging Face persistent storage mounted at `/data`.
 For a larger beta, switch `DATABASE_URL` to a managed Postgres/MySQL database.
 
-Password reset links use `FRONTEND_URL` and SMTP settings. Add these secrets on Hugging Face for real reset emails:
+Password reset, verification, and 2FA emails use `FRONTEND_URL` and SendGrid. Add these secrets on Hugging Face for real emails:
 
 ```env
-MAIL_SERVER=smtp.example.com
-MAIL_PORT=587
-MAIL_USERNAME=no-reply@example.com
-MAIL_PASSWORD=replace-with-smtp-password
-MAIL_USE_TLS=true
-MAIL_USE_SSL=false
+SENDGRID_API_KEY=replace-with-sendgrid-api-key
+SENDGRID_FROM_EMAIL=no-reply@example.com
+SENDGRID_FROM_NAME=Ohmatt
 EMAIL_TOKEN_EXPIRATION=86400
 ```
 
-For a closed beta without SMTP, you can temporarily set `PASSWORD_RESET_LINK_RESPONSE_ENABLED=true`; the API will return the reset link to the frontend after the user requests it. Turn it off before a public launch.
+`SENDGRID_FROM_EMAIL` must be a verified sender in SendGrid. For a closed beta without email delivery, you can temporarily set `PASSWORD_RESET_LINK_RESPONSE_ENABLED=true`; the API will return the reset link to the frontend after the user requests it. Turn it off before a public launch.
 
 Health check:
 

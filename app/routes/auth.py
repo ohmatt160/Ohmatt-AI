@@ -3,8 +3,9 @@ import random
 import time
 from email.mime.text import MIMEText
 from urllib.parse import urlencode
+import requests
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
@@ -81,10 +82,9 @@ def build_password_reset_url(token: str) -> str:
 
 
 def send_password_reset_email(email: str, reset_url: str) -> bool:
-    if not settings.MAIL_SERVER or not settings.MAIL_USERNAME or not settings.MAIL_PASSWORD:
-        return False
-
-    message = MIMEText(
+    return send_plain_email(
+        email,
+        "Reset your Ohmatt password",
         "\n".join(
             [
                 "You requested a password reset for your Ohmatt account.",
@@ -93,19 +93,62 @@ def send_password_reset_email(email: str, reset_url: str) -> bool:
                 "",
                 "This link expires in 24 hours. If you did not request this, you can ignore this email.",
             ]
-        )
+        ),
     )
-    message["Subject"] = "Reset your Ohmatt password"
+
+
+def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
+    if not settings.SENDGRID_API_KEY or not settings.SENDGRID_FROM_EMAIL:
+        return False
+
+    payload = {
+        "personalizations": [
+            {
+                "to": [{"email": email}],
+                "subject": subject,
+            }
+        ],
+        "from": {
+            "email": settings.SENDGRID_FROM_EMAIL,
+            "name": settings.SENDGRID_FROM_NAME,
+        },
+        "content": [
+            {
+                "type": "text/plain",
+                "value": body,
+            }
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.SENDGRID_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            settings.SENDGRID_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        return 200 <= response.status_code < 300
+    except requests.RequestException:
+        return False
+
+
+def send_smtp_email(email: str, subject: str, body: str) -> bool:
+    if not settings.MAIL_SERVER or not settings.MAIL_USERNAME or not settings.MAIL_PASSWORD:
+        return False
+    message = MIMEText(body)
+    message["Subject"] = subject
     message["From"] = settings.MAIL_USERNAME
     message["To"] = email
-
     try:
         if settings.MAIL_USE_SSL:
-            with smtplib.SMTP_SSL(settings.MAIL_SERVER, settings.MAIL_PORT) as smtp:
+            with smtplib.SMTP_SSL(settings.MAIL_SERVER, settings.MAIL_PORT, timeout=10) as smtp:
                 smtp.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
                 smtp.send_message(message)
         else:
-            with smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT) as smtp:
+            with smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT, timeout=10) as smtp:
                 if settings.MAIL_USE_TLS:
                     smtp.starttls()
                 smtp.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
@@ -116,26 +159,11 @@ def send_password_reset_email(email: str, reset_url: str) -> bool:
 
 
 def send_plain_email(email: str, subject: str, body: str) -> bool:
-    if not settings.MAIL_SERVER or not settings.MAIL_USERNAME or not settings.MAIL_PASSWORD:
-        return False
-    message = MIMEText(body)
-    message["Subject"] = subject
-    message["From"] = settings.MAIL_USERNAME
-    message["To"] = email
-    try:
-        if settings.MAIL_USE_SSL:
-            with smtplib.SMTP_SSL(settings.MAIL_SERVER, settings.MAIL_PORT) as smtp:
-                smtp.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
-                smtp.send_message(message)
-        else:
-            with smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT) as smtp:
-                if settings.MAIL_USE_TLS:
-                    smtp.starttls()
-                smtp.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
-                smtp.send_message(message)
+    if send_sendgrid_email(email, subject, body):
         return True
-    except Exception:
-        return False
+    if not settings.is_production:
+        return send_smtp_email(email, subject, body)
+    return False
 
 
 def issue_2fa_code(user: User) -> str:
@@ -159,13 +187,19 @@ def verify_2fa_code(user: User, code: str) -> bool:
 
 
 @router.post("/register", response_model=UserResponse)
-def register_user(user: UserCreate, request: Request, db: Session = Depends(get_db)):
+def register_user(
+    user: UserCreate,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     check_auth_rate_limit(request)
     validate_password_strength(user.password)
     created_user = UserService.create_user(db, user)
     token = generate_token(created_user.email)
     verify_url = f"{settings.FRONTEND_URL.rstrip()}/verify?{urlencode({'token': token})}"
-    send_plain_email(
+    background_tasks.add_task(
+        send_plain_email,
         created_user.email,
         "Verify your Ohmatt account",
         f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}",

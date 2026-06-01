@@ -28,7 +28,13 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./test.db", env="DATABASE_URL")
     
-    # Email settings (for development)
+    # Email settings
+    SENDGRID_API_KEY: str = Field(default="", env="SENDGRID_API_KEY")
+    SENDGRID_FROM_EMAIL: str = Field(default="", env="SENDGRID_FROM_EMAIL")
+    SENDGRID_FROM_NAME: str = Field(default="Ohmatt", env="SENDGRID_FROM_NAME")
+    SENDGRID_API_URL: str = Field(default="https://api.sendgrid.com/v3/mail/send", env="SENDGRID_API_URL")
+
+    # Legacy SMTP settings are kept for local fallback only.
     MAIL_SERVER: str = Field(default="sandbox.smtp.mailtrap.io", env="MAIL_SERVER")
     MAIL_PORT: int = Field(default=2525, env="MAIL_PORT")
     MAIL_USERNAME: str = Field(default="", env="MAIL_USERNAME")
