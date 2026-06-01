@@ -8,10 +8,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
+import requests
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import extract, func
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -36,6 +38,12 @@ DEFAULT_CATEGORIES = [
     ("Income", "#22C55E"),
     ("Uncategorized", "#8A8F98"),
 ]
+
+ALLOWED_RECEIPT_IMAGES = {
+    "image/jpeg": (b"\xff\xd8\xff", ".jpg"),
+    "image/png": (b"\x89PNG\r\n\x1a\n", ".png"),
+    "image/webp": (b"RIFF", ".webp"),
+}
 
 
 
@@ -105,6 +113,37 @@ def ensure_default_categories(db: Session, user_id: int):
         if name.lower() not in existing:
             db.add(TransactionCategory(user_id=user_id, name=name, color=color))
     db.commit()
+
+
+def validate_receipt_file(content_type: Optional[str], contents: bytes) -> str:
+    if content_type not in ALLOWED_RECEIPT_IMAGES:
+        raise HTTPException(400, "Receipt must be a JPEG, PNG, or WebP image")
+    signature, extension = ALLOWED_RECEIPT_IMAGES[content_type]
+    if content_type == "image/webp":
+        if not contents.startswith(signature) or contents[8:12] != b"WEBP":
+            raise HTTPException(400, "Invalid image file")
+    elif not contents.startswith(signature):
+        raise HTTPException(400, "Invalid image file")
+    return extension
+
+
+def scan_upload_for_malware(contents: bytes, filename: str) -> None:
+    if not settings.VIRUS_SCAN_API_URL:
+        return
+    headers = {}
+    if settings.VIRUS_SCAN_API_KEY:
+        headers["Authorization"] = f"Bearer {settings.VIRUS_SCAN_API_KEY}"
+    try:
+        response = requests.post(
+            settings.VIRUS_SCAN_API_URL,
+            headers=headers,
+            files={"file": (filename, contents)},
+            timeout=15,
+        )
+    except requests.RequestException:
+        raise HTTPException(503, "Receipt virus scan unavailable")
+    if response.status_code >= 400:
+        raise HTTPException(400, "Receipt failed security scan")
 
 
 @router.get("/transactions/export.csv")
@@ -226,15 +265,17 @@ async def upload_receipt(transaction_id: int, file: UploadFile = File(...), curr
     transaction = db.query(Transaction).filter_by(id=transaction_id, user_id=current_user.id).first()
     if not transaction:
         raise HTTPException(404, "Transaction not found")
-    if file.content_type not in {"image/jpeg", "image/png", "image/webp", "application/pdf"}:
-        raise HTTPException(400, "Receipt must be an image or PDF")
+
+    contents = await file.read(settings.MAX_RECEIPT_UPLOAD_BYTES + 1)
+    if len(contents) > settings.MAX_RECEIPT_UPLOAD_BYTES:
+        raise HTTPException(413, "Receipt image must be 5MB or smaller")
+    extension = validate_receipt_file(file.content_type, contents)
+    scan_upload_for_malware(contents, file.filename or "receipt")
 
     upload_dir = os.path.join(os.getcwd(), "uploads", "receipts", str(current_user.id))
     os.makedirs(upload_dir, exist_ok=True)
-    extension = os.path.splitext(file.filename or "")[1] or ".bin"
     filename = f"{uuid.uuid4().hex}{extension}"
     path = os.path.join(upload_dir, filename)
-    contents = await file.read()
     with open(path, "wb") as handle:
         handle.write(contents)
 
@@ -408,6 +449,7 @@ def set_onboarding(payload: OnboardingPayload, current_user: User = Depends(get_
     preferences = dict(current_user.preferences or {})
     preferences["onboarding_completed"] = payload.completed
     current_user.preferences = preferences
+    flag_modified(current_user, "preferences")
     db.commit()
     return {"onboarding_completed": payload.completed}
 
@@ -418,5 +460,6 @@ def set_push_notifications(payload: PushPayload, current_user: User = Depends(ge
     preferences["push_notifications"] = payload.enabled
     preferences["notifications"] = payload.enabled
     current_user.preferences = preferences
+    flag_modified(current_user, "preferences")
     db.commit()
     return {"push_notifications": payload.enabled}

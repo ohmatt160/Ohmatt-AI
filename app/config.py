@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(default="your-secret-key", env="SECRET_KEY")
     JWT_SECRET_KEY: str = Field(default="your-jwt-secret", env="JWT_SECRET_KEY")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    SESSION_IDLE_TIMEOUT_MINUTES: int = Field(default=30, env="SESSION_IDLE_TIMEOUT_MINUTES")
+    AUTH_COOKIE_NAME: str = Field(default="ohmatt_access_token", env="AUTH_COOKIE_NAME")
+    AUTH_COOKIE_SECURE: bool = Field(default=True, env="AUTH_COOKIE_SECURE")
+    AUTH_COOKIE_SAMESITE: str = Field(default="none", env="AUTH_COOKIE_SAMESITE")
     ADMIN_EMAILS: str = Field(default="", env="ADMIN_EMAILS")
     BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_EMAIL")
     BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PASSWORD")
@@ -46,6 +50,9 @@ class Settings(BaseSettings):
         default=False,
         env="PASSWORD_RESET_LINK_RESPONSE_ENABLED",
     )
+    MAX_RECEIPT_UPLOAD_BYTES: int = Field(default=5 * 1024 * 1024, env="MAX_RECEIPT_UPLOAD_BYTES")
+    VIRUS_SCAN_API_URL: str = Field(default="", env="VIRUS_SCAN_API_URL")
+    VIRUS_SCAN_API_KEY: str = Field(default="", env="VIRUS_SCAN_API_KEY")
     
     # Plaid Configuration
     PLAID_CLIENT_ID: Optional[str] = Field(default=None, env="PLAID_CLIENT_ID")
@@ -126,8 +133,12 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be set to a secure value in production")
             if not self.cors_origins:
                 raise ValueError("BACKEND_CORS_ORIGINS must include your frontend URL in production")
+            if "*" in self.cors_origins:
+                raise ValueError("BACKEND_CORS_ORIGINS cannot include * in production")
             if self.BOOTSTRAP_ADMIN_EMAIL and not self.BOOTSTRAP_ADMIN_PASSWORD:
                 raise ValueError("BOOTSTRAP_ADMIN_PASSWORD is required when BOOTSTRAP_ADMIN_EMAIL is set")
+            if self.AUTH_COOKIE_SAMESITE.lower() == "none" and not self.AUTH_COOKIE_SECURE:
+                raise ValueError("AUTH_COOKIE_SECURE must be true when AUTH_COOKIE_SAMESITE=none")
         return self
     
     class Config:

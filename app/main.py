@@ -1,11 +1,13 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.routes import api_router
 from app.config import settings
 from app.extensions import init_extensions, engine, Base
+from app.middleware.security import SecurityMiddleware
 
 
 # Static paths (if you have a frontend)
@@ -34,11 +36,19 @@ def create_app() -> FastAPI:
     # CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.BACKEND_CORS_ORIGINS.split(","),
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(SecurityMiddleware)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        if not settings.is_production:
+            raise exc
+        print(f"[ERROR] Unhandled exception at {request.url.path}: {type(exc).__name__}: {exc}")
+        return JSONResponse({"detail": "Internal server error"}, status_code=500)
     # Health check
     @app.get("/health")
     async def health_check():

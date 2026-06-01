@@ -5,27 +5,28 @@ from email.mime.text import MIMEText
 from urllib.parse import urlencode
 import requests
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from typing import Optional
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.extensions import get_db, db_session
 from app.schemas.user import UserCreate, UserResponse, Token, VerifyRequest, LoginRequest, ProfileUpdate, \
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, TwoFactorVerifyRequest
 from app.services.user_service import UserService
-from app.utils.auth import create_access_token, verify_token, get_current_user, confirm_token, \
+from app.utils.auth import create_access_token, decode_token_payload, verify_token, get_current_user, confirm_token, \
     generate_token  # Added confirm_token
 from app.models.user import User
 from app.models.blacklist import Blacklist
+from app.models.session import UserSession
 from app.schemas.user import LoginRequest
 from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 PASSWORD_RESET_PURPOSE = "password-reset"
 AUTH_RATE_LIMIT: dict[str, list[float]] = {}
 AUTH_RATE_LIMIT_WINDOW = 60
@@ -50,6 +51,55 @@ def serialize_user(user: User) -> dict:
     }
 
 
+def set_auth_cookie(response: Response, token: str):
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response):
+    response.delete_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        path="/",
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+    )
+
+
+def create_user_session(db: Session, user: User, token: str, request: Optional[Request] = None) -> None:
+    payload = decode_token_payload(token) or {}
+    token_jti = payload.get("jti")
+    if not token_jti:
+        return
+    session = UserSession(
+        user_id=user.id,
+        token_jti=token_jti,
+        ip_address=request.client.host if request and request.client else None,
+        user_agent=request.headers.get("user-agent")[:500] if request else None,
+    )
+    db.add(session)
+    db.commit()
+
+
+def revoke_current_session(db: Session, token: Optional[str], user_id: int) -> None:
+    now = datetime.utcnow()
+    if token:
+        payload = decode_token_payload(token) or {}
+        token_jti = payload.get("jti")
+        if token_jti:
+            session = db.query(UserSession).filter_by(token_jti=token_jti, user_id=user_id).first()
+            if session:
+                session.is_active = False
+                session.revoked_at = now
+    db.commit()
+
+
 def check_auth_rate_limit(request: Request):
     key = request.client.host if request.client else "unknown"
     now = time.time()
@@ -61,6 +111,19 @@ def check_auth_rate_limit(request: Request):
 
 
 def validate_password_strength(password: str):
+    common_passwords = {
+        "password",
+        "password1",
+        "password123",
+        "12345678",
+        "qwerty123",
+        "admin123",
+        "letmein1",
+        "welcome1",
+        "iloveyou1",
+    }
+    if password.strip().lower() in common_passwords:
+        raise HTTPException(400, "Password is too common")
     if len(password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
     if not re_search(r"[A-Z]", password):
@@ -216,11 +279,11 @@ def register_user(
 
 
 @router.post("/login", response_model=Token)
-def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login_user(data: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     check_auth_rate_limit(request)
     user = UserService.authenticate_user(db, data.username, data.password)
     if not user:
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     preferences = dict(user.preferences or {})
     if preferences.get("two_factor_enabled"):
         if not data.two_factor_code:
@@ -230,9 +293,11 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             raise HTTPException(status_code=428, detail="Two-factor code required")
         if not verify_2fa_code(user, data.two_factor_code):
             db.commit()
-            raise HTTPException(status_code=401, detail="Invalid two-factor code")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
         db.commit()
-    access_token = create_access_token(data={"sub": user.email})
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+    create_user_session(db, user, access_token, request)
+    set_auth_cookie(response, access_token)
     log_activity(
         request,
         user.id,
@@ -244,25 +309,74 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/login/form", response_model=Token, include_in_schema=False)
-def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_form(request: Request, response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = UserService.authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    access_token = create_access_token(data={"sub": user.email})
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+    create_user_session(db, user, access_token, request)
+    set_auth_cookie(response, access_token)
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/logout")
 def logout(
     request: Request,
-    token: str = Depends(oauth2_scheme),
+    response: Response,
+    token: Optional[str] = Depends(oauth2_scheme),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    token = token or request.cookies.get(settings.AUTH_COOKIE_NAME)
     blacklisted = Blacklist(jti=token, user_id=current_user.id)
-    db_session.add(blacklisted)
-    db_session.commit()
+    db.add(blacklisted)
+    revoke_current_session(db, token, current_user.id)
+    clear_auth_cookie(response)
     log_activity(request, current_user.id, "logout", entity_type="user", entity_id=current_user.id, description="User logged out")
     return {"message": "Logged out successfully"}
+
+
+@router.post("/logout-everywhere")
+def logout_everywhere(
+    request: Request,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    now = datetime.utcnow()
+    sessions = db.query(UserSession).filter_by(user_id=current_user.id, is_active=True).all()
+    for session in sessions:
+        session.is_active = False
+        session.revoked_at = now
+    db.commit()
+    clear_auth_cookie(response)
+    log_activity(
+        request,
+        current_user.id,
+        "logout_everywhere",
+        entity_type="user",
+        entity_id=current_user.id,
+        description="User logged out from all sessions",
+    )
+    return {"message": "Logged out from all sessions"}
+
+
+@router.post("/refresh", response_model=Token)
+def refresh_session(
+    request: Request,
+    response: Response,
+    token: Optional[str] = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    token = token or request.cookies.get(settings.AUTH_COOKIE_NAME)
+    revoke_current_session(db, token, current_user.id)
+    access_token = create_access_token(
+        data={"sub": current_user.email},
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    create_user_session(db, current_user, access_token, request)
+    set_auth_cookie(response, access_token)
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/verify")
@@ -273,7 +387,7 @@ def verify_account(data: VerifyRequest, db: Session = Depends(get_db)):
 
     user = db_session.query(User).filter_by(email=email).first()
     if not user:
-        raise HTTPException(404, "User not found")
+        raise HTTPException(400, "Invalid or expired token")
     if user.is_verified:
         return {"message": "Already verified"}
 
@@ -336,7 +450,7 @@ def change_password(
 ):
     """Change password for authenticated user"""
     if not current_user.check_password(data.current_password):
-        raise HTTPException(400, "Current password is incorrect")
+        raise HTTPException(400, "Invalid credentials")
     validate_password_strength(data.new_password)
     current_user.set_password(data.new_password)
     db.commit()
@@ -448,7 +562,7 @@ def confirm_password_reset(data: ResetPasswordRequest, db: Session = Depends(get
         raise HTTPException(400, "Invalid or expired token")
     user = db.query(User).filter_by(email=email).first()
     if not user:
-        raise HTTPException(404, "User not found")
+        raise HTTPException(400, "Invalid or expired token")
     validate_password_strength(data.new_password)
     user.set_password(data.new_password)
     db.commit()

@@ -45,6 +45,7 @@ def init_extensions(app=None):
     import app.models.bank_provider
     import app.models.bank_transaction
     import app.models.blacklist
+    import app.models.session
     import app.models.messages
     import app.models.insight
     import app.models.finance
