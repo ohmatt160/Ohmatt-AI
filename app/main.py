@@ -33,7 +33,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
-    # CORS
+    # Middleware is applied in reverse registration order. Keep CORS outermost so
+    # preflight, rate-limit, security, and error responses all receive CORS headers.
+    app.add_middleware(SecurityMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -41,7 +43,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(SecurityMiddleware)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
