@@ -408,14 +408,18 @@ def update_profile(
     }
     preferences = dict(current_user.preferences or {})
 
-    if "country_id" in update_data:
+    if "country" in update_data or "country_id" in update_data:
         from app.models.country import Country
 
-        try:
-            country_id = int(update_data.pop("country_id"))
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, "Invalid country") from exc
-        country = db.get(Country, country_id)
+        country_code = update_data.pop("country", None)
+        country_id = update_data.pop("country_id", None)
+        if country_code:
+            country = db.query(Country).filter_by(code=country_code.upper()).first()
+        else:
+            try:
+                country = db.get(Country, int(country_id))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "Invalid country") from exc
         if not country:
             raise HTTPException(400, "Invalid country")
         current_user.country_id = country.id

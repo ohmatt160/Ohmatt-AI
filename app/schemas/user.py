@@ -76,6 +76,7 @@ class ProfileUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3)
     email: Optional[str] = None
     country_id: Optional[str] = None
+    country: Optional[str] = Field(None, pattern=r"^[A-Za-z]{2}$")
     language_id: Optional[str] = None
     timezone: Optional[str] = None
     notifications: Optional[bool] = None
