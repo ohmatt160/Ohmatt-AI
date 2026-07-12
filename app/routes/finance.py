@@ -67,13 +67,18 @@ def serialize_transaction(t: Transaction) -> dict:
 
 
 def serialize_dashboard_account(account: BankAccount) -> dict:
+    balance_supported = (
+        account.subtype != "verified"
+        and (account.balance_available is not None or account.balance_current is not None)
+    )
     return {
         "id": account.id,
         "institution_name": account.institution_name,
         "account_name": account.account_name,
         "account_type": account.account_type,
-        "balance_available": account.balance_available,
-        "balance_current": account.balance_current,
+        "balance_available": account.balance_available if balance_supported else None,
+        "balance_current": account.balance_current if balance_supported else None,
+        "balance_supported": balance_supported,
         "currency": account.currency or "USD",
         "is_active": bool(account.is_active),
     }
@@ -425,17 +430,28 @@ def delete_recurring(item_id: int, current_user: User = Depends(get_current_user
 
 @router.get("/dashboard/metrics")
 def dashboard_metrics(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    total_balance = db.query(
-        func.coalesce(
-            func.sum(
-                func.coalesce(BankAccount.balance_current, BankAccount.balance_available, 0)
-            ),
-            0,
-        )
+    account_balances = db.query(
+        BankAccount.balance_current,
+        BankAccount.balance_available,
+        BankAccount.subtype,
     ).filter(
         BankAccount.user_id == current_user.id,
         BankAccount.is_active.is_(True),
-    ).scalar()
+    ).all()
+    unavailable_balance_count = sum(
+        1
+        for current, available, subtype in account_balances
+        if subtype == "verified" or (current is None and available is None)
+    )
+    balance_complete = unavailable_balance_count == 0
+    total_balance = (
+        sum(
+            float(current if current is not None else available)
+            for current, available, _ in account_balances
+        )
+        if balance_complete
+        else None
+    )
     now = datetime.utcnow()
     start_this_month = datetime(now.year, now.month, 1)
     start_last_month = datetime(now.year - 1, 12, 1) if now.month == 1 else datetime(now.year, now.month - 1, 1)
@@ -455,8 +471,10 @@ def dashboard_metrics(current_user: User = Depends(get_current_user), db: Sessio
         weekly[week][bucket] += abs(amount)
 
     return {
-        "total_balance": round(total_balance, 2),
-        "net_worth": round(total_balance, 2),
+        "total_balance": round(total_balance, 2) if total_balance is not None else None,
+        "net_worth": round(total_balance, 2) if total_balance is not None else None,
+        "balance_complete": balance_complete,
+        "balance_unavailable_count": unavailable_balance_count,
         "monthly": [{"period": k, **v} for k, v in sorted(monthly.items())],
         "weekly": [{"period": k, **v} for k, v in sorted(weekly.items())],
         "this_month": monthly[start_this_month.strftime("%Y-%m")],
@@ -555,9 +573,24 @@ def dashboard_overview(
         monthly[transaction_date.strftime("%Y-%m")][bucket] += abs(amount)
         weekly[transaction_date.strftime("%Y-W%U")][bucket] += abs(amount)
 
-    total_balance = sum(
-        float(account.balance_current or account.balance_available or 0)
+    unavailable_balance_count = sum(
+        1
         for account in accounts
+        if account.subtype == "verified"
+        or (account.balance_current is None and account.balance_available is None)
+    )
+    balance_complete = unavailable_balance_count == 0
+    total_balance = (
+        sum(
+            float(
+                account.balance_current
+                if account.balance_current is not None
+                else account.balance_available
+            )
+            for account in accounts
+        )
+        if balance_complete
+        else None
     )
     actuals = {
         category or "Uncategorized": float(total or 0)
@@ -592,8 +625,10 @@ def dashboard_overview(
             "locale": preferences.get("locale"),
         },
         "metrics": {
-            "total_balance": round(total_balance, 2),
-            "net_worth": round(total_balance, 2),
+            "total_balance": round(total_balance, 2) if total_balance is not None else None,
+            "net_worth": round(total_balance, 2) if total_balance is not None else None,
+            "balance_complete": balance_complete,
+            "balance_unavailable_count": unavailable_balance_count,
             "monthly": [{"period": key, **value} for key, value in sorted(monthly.items())],
             "weekly": [{"period": key, **value} for key, value in sorted(weekly.items())],
             "this_month": monthly[start_this_month.strftime("%Y-%m")],

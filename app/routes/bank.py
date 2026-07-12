@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 from pydantic import BaseModel
 from typing import Optional, List
@@ -12,6 +13,7 @@ from app.models.country import Country
 from app.models.bank_account import BankAccount
 from app.models.bank_connection import BankConnection
 from app.models.bank_provider import BankProvider
+from app.models.transaction import Transaction
 from app.schemas.bank import (
     BankAccountVerificationRequest,
     BankDisconnectRequest,
@@ -161,10 +163,10 @@ def user_default_currency(db: Session, current_user: User) -> str:
     )
 
 
-def account_balance(account_data: dict, key: str, default: float = 0.0):
+def account_balance(account_data: dict, key: str, default=None):
     balances = account_data.get("balances") or {}
     value = balances.get(key, default)
-    return float(value or default)
+    return float(value) if value is not None else default
 
 
 def upsert_provider_accounts(
@@ -239,6 +241,92 @@ def upsert_provider_accounts(
     return synced_accounts
 
 
+def parse_provider_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def sync_provider_transactions(
+    db: Session,
+    current_user: User,
+    connection: BankConnection,
+    provider_client,
+    accounts: List[BankAccount],
+    full_history: bool = False,
+):
+    if not connection.access_token or not accounts:
+        return 0
+
+    account_by_provider_id = {account.account_id: account for account in accounts}
+    account_db_ids = [account.id for account in accounts]
+    latest_date = None if full_history else db.query(func.max(Transaction.date)).filter(
+        Transaction.user_id == current_user.id,
+        Transaction.account_id.in_(account_db_ids),
+    ).scalar()
+    start_date = "1970-01-01" if latest_date is None else (latest_date - timedelta(days=7)).strftime("%Y-%m-%d")
+    end_date = datetime.utcnow().strftime("%Y-%m-%d")
+    transaction_data = provider_client.get_transactions(
+        connection.access_token,
+        start_date,
+        end_date,
+        list(account_by_provider_id),
+    )
+
+    provider_code = connection.provider.api_name.lower()
+    normalized = []
+    for item in transaction_data:
+        raw_id = item.get("transaction_id") or item.get("id")
+        transaction_date = parse_provider_datetime(item.get("date") or item.get("datetime"))
+        if not raw_id or transaction_date is None:
+            continue
+        transaction_id = str(raw_id)
+        if not transaction_id.startswith(f"{provider_code}:"):
+            transaction_id = f"{provider_code}:{transaction_id}"
+        normalized.append((transaction_id, transaction_date, item))
+
+    existing = {
+        transaction.transaction_id: transaction
+        for transaction in db.query(Transaction).filter(
+            Transaction.user_id == current_user.id,
+            Transaction.transaction_id.in_([item[0] for item in normalized]),
+        ).all()
+    } if normalized else {}
+
+    changed = 0
+    sole_account = accounts[0] if len(accounts) == 1 else None
+    for transaction_id, transaction_date, item in normalized:
+        account = account_by_provider_id.get(str(item.get("account_id"))) or sole_account
+        if account is None:
+            continue
+        transaction = existing.get(transaction_id)
+        if transaction is None:
+            transaction = Transaction(
+                user_id=current_user.id,
+                account_id=account.id,
+                transaction_id=transaction_id,
+            )
+            db.add(transaction)
+        transaction.amount = float(item.get("amount") or 0)
+        transaction.date = transaction_date
+        transaction.datetime = transaction_date
+        transaction.currency = str(item.get("currency") or account.currency or "USD")[:3]
+        transaction.description = str(item.get("description") or item.get("name") or "Bank transaction")[:500]
+        transaction.merchant_name = str(item.get("merchant_name") or "")[:200] or None
+        if not transaction.user_category:
+            transaction.category = str(item.get("category") or "Uncategorized")[:100]
+        transaction.pending = bool(item.get("pending", False))
+        changed += 1
+
+    db.commit()
+    return changed
+
+
 def serialize_connection(connection: BankConnection):
     provider = connection.provider
     accounts = [account for account in connection.accounts if account.is_active]
@@ -252,12 +340,17 @@ def serialize_connection(connection: BankConnection):
         "accountMask": str(accounts[0].account_id)[-4:] if accounts else None,
         "account_count": len(accounts),
         "status": "active" if connection.is_active else "disconnected",
+        "sync_supported": bool(connection.access_token),
         "last_sync": connection.last_sync.isoformat() if connection.last_sync else None,
         "created_at": connection.created_at.isoformat() if connection.created_at else None,
     }
 
 
 def serialize_account(account: BankAccount):
+    balance_supported = (
+        account.subtype != "verified"
+        and (account.balance_available is not None or account.balance_current is not None)
+    )
     return {
         "id": account.id,
         "connection_id": account.connection_id,
@@ -266,8 +359,10 @@ def serialize_account(account: BankAccount):
         "account_name": account.account_name or account.name or "Unknown",
         "account_type": account.account_type or account.type or "checking",
         "accountMask": str(account.account_id)[-4:] if account.account_id else None,
-        "balance_available": account.balance_available,
-        "balance_current": account.balance_current,
+        "balance_available": account.balance_available if balance_supported else None,
+        "balance_current": account.balance_current if balance_supported else None,
+        "balance_supported": balance_supported,
+        "sync_supported": bool(account.connection and account.connection.access_token),
         "currency": account.currency or "USD",
         "status": "active" if account.is_active else "disconnected",
     }
@@ -323,6 +418,7 @@ def get_accounts(
     """Get user's connected bank accounts"""
     accounts = (
         db.query(BankAccount)
+        .options(selectinload(BankAccount.connection))
         .filter_by(user_id=current_user.id, is_active=True)
         .all()
     )
@@ -376,6 +472,15 @@ def connect_bank(
         country_code,
     )
 
+    if provider.api_name == "mono":
+        preferences = current_user.preferences or {}
+        link_data["data"] = {
+            "customer": {
+                "name": preferences.get("full_name") or current_user.username,
+                "email": current_user.email,
+            }
+        }
+
     if link_data.get("error"):
         raise HTTPException(400, link_data["error"])
 
@@ -424,7 +529,12 @@ def exchange_bank_token(
 
     connection = (
         db.query(BankConnection)
-        .filter_by(user_id=current_user.id, provider_id=provider.id, is_active=True)
+        .filter_by(
+            user_id=current_user.id,
+            provider_id=provider.id,
+            access_token=access_token,
+            is_active=True,
+        )
         .first()
     )
     if not connection:
@@ -443,12 +553,27 @@ def exchange_bank_token(
         or data.metadata.get("institution_id")
     )
     connection.institution_name = institution_name
-    connection.last_sync = datetime.utcnow()
+    previous_last_sync = connection.last_sync
     db.commit()
     db.refresh(connection)
 
-    accounts_data = provider_client.get_accounts(access_token)
-    upsert_provider_accounts(db, current_user, connection, accounts_data)
+    try:
+        accounts_data = provider_client.get_accounts(access_token)
+        synced_accounts = upsert_provider_accounts(db, current_user, connection, accounts_data)
+        transaction_count = sync_provider_transactions(
+            db,
+            current_user,
+            connection,
+            provider_client,
+            synced_accounts,
+            full_history=True,
+        )
+        connection.last_sync = datetime.utcnow()
+        db.commit()
+    except RuntimeError as exc:
+        connection.last_sync = previous_last_sync
+        db.commit()
+        raise HTTPException(502, "Bank data is not ready yet; retry sync shortly") from exc
     db.refresh(connection)
     log_activity(db,
         request,
@@ -457,7 +582,11 @@ def exchange_bank_token(
         entity_type="bank_connection",
         entity_id=connection.id,
         description=f"Connected {connection.institution_name}",
-        metadata={"provider": provider.api_name, "accounts": len(accounts_data or [])},
+        metadata={
+            "provider": provider.api_name,
+            "accounts": len(accounts_data or []),
+            "transactions": transaction_count,
+        },
     )
 
     return serialize_connection(connection)
@@ -556,8 +685,9 @@ def verify_bank_account(
     account.account_type = "checking"
     account.type = "bank_account"
     account.subtype = "verified"
-    account.balance_available = 0.0
-    account.balance_current = 0.0
+    # Flutterwave verifies the account holder; it does not expose customer balances.
+    account.balance_available = None
+    account.balance_current = None
     account.currency = currency
     account.is_active = True
     account.last_updated = datetime.utcnow()
@@ -616,20 +746,28 @@ def sync_connection(
     if not connection:
         raise HTTPException(404, "Connection not found")
     if not connection.access_token:
-        connection.last_sync = datetime.utcnow()
-        for account in connection.accounts:
-            account.last_updated = datetime.utcnow()
-        db.commit()
-        db.refresh(connection)
-        return serialize_connection(connection)
+        raise HTTPException(
+            409,
+            "This verified account does not support balance or transaction sync; connect with a bank-data provider",
+        )
 
     provider_client = get_provider_instance(connection.provider, user_default_currency(db, current_user))
-    accounts_data = provider_client.get_accounts(connection.access_token)
-    upsert_provider_accounts(db, current_user, connection, accounts_data)
+    try:
+        accounts_data = provider_client.get_accounts(connection.access_token)
+        synced_accounts = upsert_provider_accounts(db, current_user, connection, accounts_data)
+        transaction_count = sync_provider_transactions(
+            db,
+            current_user,
+            connection,
+            provider_client,
+            synced_accounts,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(502, "Bank data sync failed; the sync was not marked complete") from exc
     connection.last_sync = datetime.utcnow()
     db.commit()
     db.refresh(connection)
-    return serialize_connection(connection)
+    return {**serialize_connection(connection), "transactions_synced": transaction_count}
 
 
 # app/routes/bank.py - add this

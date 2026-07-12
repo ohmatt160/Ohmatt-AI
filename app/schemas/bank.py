@@ -37,6 +37,8 @@ class BankAccountResponse(BaseModel):
     accountMask: Optional[str]
     balance_available: Optional[float]
     balance_current: Optional[float]
+    balance_supported: bool
+    sync_supported: bool
     currency: str
     status: str
 

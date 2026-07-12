@@ -21,7 +21,7 @@ PROVIDER_REGIONS = {
     "KE": ["flutterwave", "mpesa"],
     "MA": ["stripe"],
     "MZ": ["flutterwave", "stripe"],
-    "NG": ["flutterwave", "paystack", "mono"],
+    "NG": ["mono", "flutterwave", "paystack"],
     "PT": ["truelayer", "stripe"],
     "RW": ["flutterwave", "stripe"],
     "SN": ["flutterwave", "stripe"],
@@ -33,10 +33,10 @@ PROVIDER_REGIONS = {
 
 PROVIDER_METADATA = {
     "fawry": {"name": "Fawry", "features": ["payments", "verification"]},
-    "flutterwave": {"name": "Flutterwave", "features": ["transactions", "verification"]},
-    "mono": {"name": "Mono", "features": ["account_linking", "transactions", "identity"]},
+    "flutterwave": {"name": "Flutterwave", "features": ["payments", "account_verification"]},
+    "mono": {"name": "Mono", "features": ["account_linking", "balances", "transactions", "identity"]},
     "mpesa": {"name": "M-Pesa", "features": ["transactions", "mobile_money"]},
-    "paystack": {"name": "Paystack", "features": ["transactions", "verification"]},
+    "paystack": {"name": "Paystack", "features": ["payments", "account_verification"]},
     "plaid": {"name": "Plaid", "features": ["transactions", "balances", "auth"]},
     "stitch": {"name": "Stitch", "features": ["transactions", "balances"]},
     "stripe": {"name": "Stripe", "features": ["payments", "balances"]},

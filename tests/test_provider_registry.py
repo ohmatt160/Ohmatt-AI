@@ -8,7 +8,7 @@ def test_bank_connect_never_exposes_unimplemented_payment_providers():
 
 
 def test_nigeria_returns_only_implemented_bank_connectors():
-    assert get_providers_for_country("NG") == ["flutterwave", "paystack", "mono"]
+    assert get_providers_for_country("NG") == ["mono", "flutterwave", "paystack"]
 
 
 def test_unknown_country_has_no_unsafe_default_provider():
