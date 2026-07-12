@@ -11,8 +11,13 @@ class TransactionService:
     def categorize_transaction(self, description: str) -> tuple:
         return self.ai_service.categorize_transaction(description)
 
-    def analyze_spending(self, transactions: List[Transaction]) -> List[str]:
-        return self.ai_service.analyze_spending(transactions)
+    def analyze_spending(
+        self,
+        db: Session,
+        user_id: int,
+        currency: str,
+    ) -> List[str]:
+        return self.ai_service.analyze_spending(db, user_id, currency)
 
     def create_transaction_from_plaid(
             self,

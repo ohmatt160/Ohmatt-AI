@@ -147,7 +147,9 @@ def get_provider_instance(provider: BankProvider, default_currency: str = "USD")
 
 def user_country_code(db: Session, current_user: User) -> str:
     country = get_user_country(db, current_user)
-    return country.code if country and country.code else "US"
+    if not country or not country.code:
+        raise HTTPException(400, "Select your banking country before connecting a bank")
+    return country.code
 
 
 def user_default_currency(db: Session, current_user: User) -> str:

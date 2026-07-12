@@ -90,15 +90,11 @@ async def create_transaction(
         description="Generated insights after transaction creation",
     )
 
-    # Get insights
-    recent_transactions = (
-        db.query(Transaction)
-        .filter_by(user_id=current_user.id)
-        .order_by(Transaction.date.desc())
-        .limit(20)
-        .all()
+    insights = ai_service.analyze_spending(
+        db,
+        current_user.id,
+        (current_user.preferences or {}).get("currency", "USD"),
     )
-    insights = ai_service.analyze_spending(recent_transactions)
 
 
     return {

@@ -2,11 +2,13 @@ import os
 import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from collections import defaultdict
+from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 from typing import List, Tuple
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 from app.models.transaction import Transaction
+from app.utils.currency import format_currency
 
 
 class AIService:
@@ -51,30 +53,27 @@ class AIService:
         except:
             return "Uncategorized", 0.0
 
-    def analyze_spending(self, transactions: List[Transaction]) -> List[str]:
-        summary = defaultdict(float)
-        for t in transactions:
-            summary[t.category or "Uncategorized"] += t.amount
-
-        total = sum(summary.values())
-        insights = []
-
-        for cat, amt in summary.items():
-            perc = (amt / total) * 100 if total else 0
-            insights.append(f"You spent ${amt:.2f} on {cat} ({perc:.0f}% of total)")
-
-        if len(transactions) > 5:
-            amounts = [[t.amount] for t in transactions]
-            iso = IsolationForest(contamination=0.1)
-            iso.fit(amounts)
-            preds = iso.predict(amounts)
-            anomalies = [t for t, p in zip(transactions, preds) if p == -1]
-            if anomalies:
-                insights.append(f" {len(anomalies)} unusual transaction(s) detected.")
-                for t in anomalies:
-                    insights.append(f" - {t.description}: ${t.amount:.2f}")
-
-        return insights
+    def analyze_spending(
+        self,
+        db: Session,
+        user_id: int,
+        currency: str,
+    ) -> List[str]:
+        rows = (
+            db.query(
+                func.coalesce(Transaction.user_category, Transaction.category, "Uncategorized"),
+                func.count(Transaction.id),
+                func.coalesce(func.sum(Transaction.amount), 0),
+            )
+            .filter(Transaction.user_id == user_id)
+            .group_by(func.coalesce(Transaction.user_category, Transaction.category, "Uncategorized"))
+            .order_by(func.count(Transaction.id).desc())
+            .all()
+        )
+        return [
+            f"{category}: {count} transactions, net {format_currency(float(amount or 0), currency)}"
+            for category, count, amount in rows
+        ]
 
     def retrain_from_corrections(self, corrections: List[Transaction]) -> int:
         rows = [

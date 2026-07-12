@@ -408,6 +408,21 @@ def update_profile(
     }
     preferences = dict(current_user.preferences or {})
 
+    if "country_id" in update_data:
+        from app.models.country import Country
+
+        try:
+            country_id = int(update_data.pop("country_id"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "Invalid country") from exc
+        country = db.get(Country, country_id)
+        if not country:
+            raise HTTPException(400, "Invalid country")
+        current_user.country_id = country.id
+        current_user.timezone = country.timezone or current_user.timezone
+        preferences["currency"] = country.currency or preferences.get("currency", "USD")
+        current_user.preferences = preferences
+
     for field, value in update_data.items():
         if field in preference_fields:
             preferences[field] = value
