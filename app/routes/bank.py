@@ -1,12 +1,12 @@
 from datetime import datetime
 import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from pydantic import BaseModel
 from typing import Optional, List
 
 from app.config import settings
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.models.user import User
 from app.models.country import Country
 from app.models.bank_account import BankAccount
@@ -22,7 +22,11 @@ from app.providers.flutterwave_provider import FlutterwaveProvider
 from app.providers.mono_provider import MonoProvider
 from app.providers.paystack_provider import PaystackProvider
 from app.providers.plaid_provider import PlaidProvider
-from app.providers import get_providers_for_country, provider_metadata
+from app.providers import (
+    IMPLEMENTED_BANKING_PROVIDERS,
+    get_providers_for_country,
+    provider_metadata,
+)
 from app.utils.auth import get_current_user
 from app.utils.i18n import t, user_language
 from app.middleware.activity import log_activity
@@ -32,10 +36,10 @@ router = APIRouter(prefix="/bank", tags=["banking"])
 
 
 
-def get_user_country(current_user: User):
+def get_user_country(db: Session, current_user: User):
     if not current_user.country_id:
         return None
-    return db_session.query(Country).filter_by(id=current_user.country_id).first()
+    return db.get(Country, current_user.country_id)
 
 
 def provider_payload(code: str, name: Optional[str] = None, features: Optional[List[str]] = None):
@@ -48,9 +52,36 @@ def provider_payload(code: str, name: Optional[str] = None, features: Optional[L
     }
 
 
-def get_or_create_provider(code: str, name: str, country_code: Optional[str] = None):
+def provider_is_configured(code: str, config: Optional[dict] = None) -> bool:
+    config = config or {}
+    checks = {
+        "flutterwave": settings.FLUTTERWAVE_ENABLED
+        and bool(config.get("secret_key") or settings.FLUTTERWAVE_SECRET_KEY),
+        "paystack": settings.PAYSTACK_ENABLED
+        and bool(config.get("secret_key") or settings.PAYSTACK_SECRET_KEY),
+        "mono": settings.MONO_ENABLED
+        and bool(config.get("secret_key") or settings.MONO_SECRET_KEY),
+        "plaid": bool(
+            (config.get("client_id") or settings.PLAID_CLIENT_ID)
+            and (config.get("secret") or settings.PLAID_SECRET)
+        ),
+    }
+    return checks.get(code.lower(), False)
+
+
+def get_or_create_provider(
+    db: Session,
+    code: str,
+    name: str,
+    country_code: Optional[str] = None,
+):
     normalized_code = code.lower()
-    provider = db_session.query(BankProvider).filter_by(api_name=normalized_code).first()
+    if normalized_code not in IMPLEMENTED_BANKING_PROVIDERS:
+        raise HTTPException(400, f"Unsupported banking provider '{normalized_code}'")
+
+    provider = db.query(BankProvider).filter_by(api_name=normalized_code).first()
+    if not provider_is_configured(normalized_code, provider.api_config if provider else None):
+        raise HTTPException(503, f"{provider_metadata(normalized_code)['name']} is not configured")
     if provider:
         return provider
 
@@ -61,9 +92,9 @@ def get_or_create_provider(code: str, name: str, country_code: Optional[str] = N
         is_active=True,
         api_config={},
     )
-    db_session.add(provider)
-    db_session.commit()
-    db_session.refresh(provider)
+    db.add(provider)
+    db.commit()
+    db.refresh(provider)
     return provider
 
 
@@ -114,13 +145,13 @@ def get_provider_instance(provider: BankProvider, default_currency: str = "USD")
     raise HTTPException(400, f"Unsupported banking provider '{api_name}'")
 
 
-def user_country_code(current_user: User) -> str:
-    country = get_user_country(current_user)
+def user_country_code(db: Session, current_user: User) -> str:
+    country = get_user_country(db, current_user)
     return country.code if country and country.code else "US"
 
 
-def user_default_currency(current_user: User) -> str:
-    country = get_user_country(current_user)
+def user_default_currency(db: Session, current_user: User) -> str:
+    country = get_user_country(db, current_user)
     return (
         country.currency
         if country and country.currency
@@ -134,7 +165,12 @@ def account_balance(account_data: dict, key: str, default: float = 0.0):
     return float(value or default)
 
 
-def upsert_provider_accounts(current_user: User, connection: BankConnection, accounts_data: List[dict]):
+def upsert_provider_accounts(
+    db: Session,
+    current_user: User,
+    connection: BankConnection,
+    accounts_data: List[dict],
+):
     synced_accounts = []
 
     for account_data in accounts_data:
@@ -143,7 +179,7 @@ def upsert_provider_accounts(current_user: User, connection: BankConnection, acc
             continue
 
         existing_account = (
-            db_session.query(BankAccount)
+            db.query(BankAccount)
             .filter_by(user_id=current_user.id, account_id=provider_account_id)
             .first()
         )
@@ -191,12 +227,12 @@ def upsert_provider_accounts(current_user: User, connection: BankConnection, acc
             currency=balances.get("currency") or account_data.get("currency") or "USD",
             is_active=True,
         )
-        db_session.add(account)
+        db.add(account)
         synced_accounts.append(account)
 
-    db_session.commit()
+    db.commit()
     for account in synced_accounts:
-        db_session.refresh(account)
+        db.refresh(account)
 
     return synced_accounts
 
@@ -243,33 +279,29 @@ def verification_account_id(provider_name: str, account_bank: str, account_numbe
 
 
 @router.get("/providers")
-async def get_providers(
+def get_providers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get available banking providers for user's country"""
-    country = get_user_country(current_user)
+    country = get_user_country(db, current_user)
     country_code = country.code if country else None
-    allowed_provider_codes = set(get_providers_for_country(country_code))
-    configured_providers = db_session.query(BankProvider).filter_by(is_active=True).all()
-    if configured_providers:
-        filtered_providers = [
-            provider for provider in configured_providers
-            if provider.api_name.lower() in allowed_provider_codes
-        ] or configured_providers
-        return {
-            "country": (
-                {"code": country.code, "name": country.name, "currency": country.currency}
-                if country
-                else None
-            ),
-            "providers": [
-                provider_payload(provider.api_name, provider.name, None)
-                for provider in filtered_providers
-            ],
-        }
-
-    providers = [provider_payload(code) for code in get_providers_for_country(country_code)]
+    candidate_codes = (
+        get_providers_for_country(country_code)
+        if country_code
+        else sorted(IMPLEMENTED_BANKING_PROVIDERS)
+    )
+    configured_rows = {
+        provider.api_name.lower(): provider
+        for provider in db.query(BankProvider)
+        .filter(BankProvider.is_active.is_(True), BankProvider.api_name.in_(candidate_codes))
+        .all()
+    }
+    providers = []
+    for code in candidate_codes:
+        row = configured_rows.get(code)
+        if provider_is_configured(code, row.api_config if row else None):
+            providers.append(provider_payload(code, row.name if row else None))
 
     return {
         "country": (
@@ -282,13 +314,13 @@ async def get_providers(
 
 
 @router.get("/accounts", response_model=List[BankAccountResponse])
-async def get_accounts(
+def get_accounts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get user's connected bank accounts"""
     accounts = (
-        db_session.query(BankAccount)
+        db.query(BankAccount)
         .filter_by(user_id=current_user.id, is_active=True)
         .all()
     )
@@ -297,13 +329,13 @@ async def get_accounts(
 
 
 @router.get("/flutterwave/banks")
-async def get_flutterwave_banks(
+def get_flutterwave_banks(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Return Flutterwave's cached bank directory for the user's country."""
-    country_code = user_country_code(current_user)
-    provider = get_or_create_provider("flutterwave", "Flutterwave", country_code)
+    country_code = user_country_code(db, current_user)
+    provider = get_or_create_provider(db, "flutterwave", "Flutterwave", country_code)
     try:
         banks = get_provider_instance(provider).list_banks(country_code)
     except RuntimeError as exc:
@@ -312,13 +344,14 @@ async def get_flutterwave_banks(
 
 
 @router.get("/connections")
-async def get_connections(
+def get_connections(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get user's bank connections"""
     connections = (
-        db_session.query(BankConnection)
+        db.query(BankConnection)
+        .options(selectinload(BankConnection.provider), selectinload(BankConnection.accounts))
         .filter_by(user_id=current_user.id, is_active=True)
         .all()
     )
@@ -326,16 +359,16 @@ async def get_connections(
     return [serialize_connection(c) for c in connections]
 
 @router.post("/connect")
-async def connect_bank(
+def connect_bank(
     data: BankConnectRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Start a live bank connection. OAuth providers return link/auth data."""
-    country_code = user_country_code(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
-    provider_client = get_provider_instance(provider, user_default_currency(current_user))
+    country_code = user_country_code(db, current_user)
+    provider = get_or_create_provider(db, data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(db, current_user))
     link_data = provider_client.create_link_token(
         str(current_user.id),
         country_code,
@@ -344,7 +377,7 @@ async def connect_bank(
     if link_data.get("error"):
         raise HTTPException(400, link_data["error"])
 
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "bank_connection_start",
@@ -362,16 +395,16 @@ async def connect_bank(
 
 
 @router.post("/exchange-token")
-async def exchange_bank_token(
+def exchange_bank_token(
     data: BankTokenExchangeRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Finish a live bank connection and sync accounts from the provider."""
-    country_code = user_country_code(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
-    provider_client = get_provider_instance(provider, user_default_currency(current_user))
+    country_code = user_country_code(db, current_user)
+    provider = get_or_create_provider(db, data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(db, current_user))
     token_data = provider_client.exchange_token(data.public_token, data.metadata)
 
     if token_data.get("error") or token_data.get("success") is False:
@@ -388,7 +421,7 @@ async def exchange_bank_token(
     )
 
     connection = (
-        db_session.query(BankConnection)
+        db.query(BankConnection)
         .filter_by(user_id=current_user.id, provider_id=provider.id, is_active=True)
         .first()
     )
@@ -399,7 +432,7 @@ async def exchange_bank_token(
             is_active=True,
             created_at=datetime.utcnow(),
         )
-        db_session.add(connection)
+        db.add(connection)
 
     connection.access_token = access_token
     connection.item_id = token_data.get("item_id")
@@ -409,13 +442,13 @@ async def exchange_bank_token(
     )
     connection.institution_name = institution_name
     connection.last_sync = datetime.utcnow()
-    db_session.commit()
-    db_session.refresh(connection)
+    db.commit()
+    db.refresh(connection)
 
     accounts_data = provider_client.get_accounts(access_token)
-    upsert_provider_accounts(current_user, connection, accounts_data)
-    db_session.refresh(connection)
-    log_activity(
+    upsert_provider_accounts(db, current_user, connection, accounts_data)
+    db.refresh(connection)
+    log_activity(db,
         request,
         current_user.id,
         "bank_connection_complete",
@@ -428,17 +461,17 @@ async def exchange_bank_token(
     return serialize_connection(connection)
 
 @router.post("/verify-account")
-async def verify_bank_account(
+def verify_bank_account(
     data: BankAccountVerificationRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Verify a bank account with providers that use account resolution."""
-    country = get_user_country(current_user)
-    country_code = country.code if country and country.code else user_country_code(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
-    provider_client = get_provider_instance(provider, user_default_currency(current_user))
+    country = get_user_country(db, current_user)
+    country_code = country.code if country and country.code else user_country_code(db, current_user)
+    provider = get_or_create_provider(db, data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(db, current_user))
 
     if not hasattr(provider_client, "verify_bank_account"):
         raise HTTPException(400, f"{provider.name} does not support account verification")
@@ -475,7 +508,7 @@ async def verify_bank_account(
     )
 
     connection = (
-        db_session.query(BankConnection)
+        db.query(BankConnection)
         .filter_by(
             user_id=current_user.id,
             provider_id=provider.id,
@@ -491,17 +524,17 @@ async def verify_bank_account(
             is_active=True,
             created_at=datetime.utcnow(),
         )
-        db_session.add(connection)
+        db.add(connection)
 
     connection.institution_id = data.account_bank
     connection.institution_name = institution_name
     connection.last_sync = datetime.utcnow()
-    db_session.commit()
-    db_session.refresh(connection)
+    db.commit()
+    db.refresh(connection)
 
     provider_account_id = verification_account_id(provider.api_name, data.account_bank, account_number)
     account = (
-        db_session.query(BankAccount)
+        db.query(BankAccount)
         .filter_by(user_id=current_user.id, account_id=provider_account_id)
         .first()
     )
@@ -511,7 +544,7 @@ async def verify_bank_account(
             account_id=provider_account_id,
             created_at=datetime.utcnow(),
         )
-        db_session.add(account)
+        db.add(account)
 
     account.connection_id = connection.id
     account.institution_name = institution_name
@@ -526,9 +559,9 @@ async def verify_bank_account(
     account.currency = currency
     account.is_active = True
     account.last_updated = datetime.utcnow()
-    db_session.commit()
-    db_session.refresh(connection)
-    log_activity(
+    db.commit()
+    db.refresh(connection)
+    log_activity(db,
         request,
         current_user.id,
         "bank_connection_complete",
@@ -541,14 +574,14 @@ async def verify_bank_account(
     return serialize_connection(connection)
 
 @router.post("/disconnect")
-async def disconnect_bank(
+def disconnect_bank(
     data: BankDisconnectRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Disconnect a bank account"""
-    connection = db_session.query(BankConnection).filter_by(
+    connection = db.query(BankConnection).filter_by(
         id=data.id, user_id=current_user.id
     ).first()
     if not connection:
@@ -556,8 +589,8 @@ async def disconnect_bank(
     connection.is_active = False
     for account in connection.accounts:
         account.is_active = False
-    db_session.commit()
-    log_activity(
+    db.commit()
+    log_activity(db,
         request,
         current_user.id,
         "bank_disconnect",
@@ -569,13 +602,13 @@ async def disconnect_bank(
 
 
 @router.post("/connections/{connection_id}/sync")
-async def sync_connection(
+def sync_connection(
     connection_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Sync connected bank accounts from the live provider."""
-    connection = db_session.query(BankConnection).filter_by(
+    connection = db.query(BankConnection).filter_by(
         id=connection_id, user_id=current_user.id, is_active=True
     ).first()
     if not connection:
@@ -584,22 +617,22 @@ async def sync_connection(
         connection.last_sync = datetime.utcnow()
         for account in connection.accounts:
             account.last_updated = datetime.utcnow()
-        db_session.commit()
-        db_session.refresh(connection)
+        db.commit()
+        db.refresh(connection)
         return serialize_connection(connection)
 
-    provider_client = get_provider_instance(connection.provider, user_default_currency(current_user))
+    provider_client = get_provider_instance(connection.provider, user_default_currency(db, current_user))
     accounts_data = provider_client.get_accounts(connection.access_token)
-    upsert_provider_accounts(current_user, connection, accounts_data)
+    upsert_provider_accounts(db, current_user, connection, accounts_data)
     connection.last_sync = datetime.utcnow()
-    db_session.commit()
-    db_session.refresh(connection)
+    db.commit()
+    db.refresh(connection)
     return serialize_connection(connection)
 
 
 # app/routes/bank.py - add this
 @router.post("/providers/{provider_name}/test")
-async def test_provider(
+def test_provider(
         provider_name: str,
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)

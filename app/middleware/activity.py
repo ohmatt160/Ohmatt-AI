@@ -1,11 +1,12 @@
 from typing import Optional
 
 from fastapi import Request
-from app.extensions import db_session
+from sqlalchemy.orm import Session
 from app.models.activity_log import ActivityLog
 
 
 def log_activity(
+    db: Session,
     request: Optional[Request],
     user_id: int,
     action: str,
@@ -29,6 +30,6 @@ def log_activity(
         user_agent=request.headers.get("user-agent") if request else kwargs.pop("user_agent", None),
         **kwargs
     )
-    db_session.add(log)
-    db_session.commit()
+    db.add(log)
+    db.commit()
     return log

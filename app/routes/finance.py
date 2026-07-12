@@ -425,19 +425,31 @@ def delete_recurring(item_id: int, current_user: User = Depends(get_current_user
 
 @router.get("/dashboard/metrics")
 def dashboard_metrics(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    accounts = db.query(BankAccount).filter_by(user_id=current_user.id).all()
-    total_balance = sum(float(a.balance_current or a.balance_available or 0) for a in accounts)
+    total_balance = db.query(
+        func.coalesce(
+            func.sum(
+                func.coalesce(BankAccount.balance_current, BankAccount.balance_available, 0)
+            ),
+            0,
+        )
+    ).filter(
+        BankAccount.user_id == current_user.id,
+        BankAccount.is_active.is_(True),
+    ).scalar()
     now = datetime.utcnow()
     start_this_month = datetime(now.year, now.month, 1)
     start_last_month = datetime(now.year - 1, 12, 1) if now.month == 1 else datetime(now.year, now.month - 1, 1)
-    txs = db.query(Transaction).filter(Transaction.user_id == current_user.id, Transaction.date >= start_last_month).all()
+    txs = db.query(Transaction.date, Transaction.amount).filter(
+        Transaction.user_id == current_user.id,
+        Transaction.date >= start_last_month,
+    ).all()
 
     monthly = defaultdict(lambda: {"income": 0.0, "expense": 0.0})
     weekly = defaultdict(lambda: {"income": 0.0, "expense": 0.0})
-    for tx in txs:
-        key = tx.date.strftime("%Y-%m") if tx.date else now.strftime("%Y-%m")
-        week = tx.date.strftime("%Y-W%U") if tx.date else now.strftime("%Y-W%U")
-        amount = float(tx.amount or 0)
+    for transaction_date, raw_amount in txs:
+        key = transaction_date.strftime("%Y-%m") if transaction_date else now.strftime("%Y-%m")
+        week = transaction_date.strftime("%Y-W%U") if transaction_date else now.strftime("%Y-W%U")
+        amount = float(raw_amount or 0)
         bucket = "income" if amount < 0 else "expense"
         monthly[key][bucket] += abs(amount)
         weekly[week][bucket] += abs(amount)

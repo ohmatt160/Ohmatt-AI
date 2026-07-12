@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.models.country import Country
 from app.models.continent import Continent
 from app.models.language import Language
@@ -17,14 +17,14 @@ router = APIRouter(prefix="/geo", tags=["geography"])
 # ==================== Countries ====================
 
 @router.get("/countries")
-async def list_countries(
+def list_countries(
     continent: Optional[str] = Query(None),
     language: Optional[str] = Query(None),
     plaid_supported: Optional[bool] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Get all countries with optional filtering"""
-    query = db_session.query(Country)
+    query = db.query(Country)
 
     if continent:
         query = query.filter_by(continent=continent.upper())
@@ -55,9 +55,9 @@ async def list_countries(
 
 
 @router.get("/countries/{country_code}")
-async def get_country(country_code: str, db: Session = Depends(get_db)):
+def get_country(country_code: str, db: Session = Depends(get_db)):
     """Get a specific country by code"""
-    country = db_session.query(Country).filter_by(code=country_code.upper()).first()
+    country = db.query(Country).filter_by(code=country_code.upper()).first()
 
     if not country:
         raise HTTPException(status_code=404, detail=f"Country '{country_code}' not found")
@@ -78,10 +78,10 @@ async def get_country(country_code: str, db: Session = Depends(get_db)):
 
 
 @router.get("/countries/supported/banking")
-async def get_banking_countries(db: Session = Depends(get_db)):
+def get_banking_countries(db: Session = Depends(get_db)):
     """Get countries with banking provider support"""
     countries = (
-        db_session.query(Country)
+        db.query(Country)
         .filter(
             (Country.plaid_supported == True) | (Country.other_provider.isnot(None))
         )
@@ -113,9 +113,9 @@ async def get_banking_countries(db: Session = Depends(get_db)):
 # ==================== Continents ====================
 
 @router.get("/continents")
-async def list_continents(db: Session = Depends(get_db)):
+def list_continents(db: Session = Depends(get_db)):
     """Get all continents"""
-    continents = db_session.query(Continent).order_by(Continent.name.asc()).all()
+    continents = db.query(Continent).order_by(Continent.name.asc()).all()
 
     return {
         "success": True,
@@ -125,15 +125,15 @@ async def list_continents(db: Session = Depends(get_db)):
 
 
 @router.get("/continents/{continent_code}/countries")
-async def get_continent_countries(continent_code: str, db: Session = Depends(get_db)):
+def get_continent_countries(continent_code: str, db: Session = Depends(get_db)):
     """Get all countries in a continent"""
-    continent = db_session.query(Continent).filter_by(code=continent_code.upper()).first()
+    continent = db.query(Continent).filter_by(code=continent_code.upper()).first()
 
     if not continent:
         raise HTTPException(status_code=404, detail=f"Continent '{continent_code}' not found")
 
     countries = (
-        db_session.query(Country)
+        db.query(Country)
         .filter_by(continent=continent.code)
         .order_by(Country.name.asc())
         .all()
@@ -153,9 +153,9 @@ async def get_continent_countries(continent_code: str, db: Session = Depends(get
 # ==================== Languages ====================
 
 @router.get("/languages")
-async def list_languages(db: Session = Depends(get_db)):
+def list_languages(db: Session = Depends(get_db)):
     """Get all languages"""
-    languages = db_session.query(Language).order_by(Language.name.asc()).all()
+    languages = db.query(Language).order_by(Language.name.asc()).all()
 
     return {
         "success": True,
@@ -168,9 +168,9 @@ async def list_languages(db: Session = Depends(get_db)):
 
 
 @router.get("/languages/{language_code}")
-async def get_language(language_code: str, db: Session = Depends(get_db)):
+def get_language(language_code: str, db: Session = Depends(get_db)):
     """Get a specific language by code"""
-    language = db_session.query(Language).filter_by(code=language_code.lower()).first()
+    language = db.query(Language).filter_by(code=language_code.lower()).first()
 
     if not language:
         raise HTTPException(status_code=404, detail=f"Language '{language_code}' not found")
@@ -186,7 +186,7 @@ async def get_language(language_code: str, db: Session = Depends(get_db)):
 
 
 @router.post("/seed")
-async def seed_geo_data(
+def seed_geo_data(
     lang: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
 ):

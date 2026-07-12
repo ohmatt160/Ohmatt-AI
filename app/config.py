@@ -135,6 +135,8 @@ class Settings(BaseSettings):
                 raise ValueError("SECRET_KEY must be set to a secure value in production")
             if self.JWT_SECRET_KEY in insecure_secret_values:
                 raise ValueError("JWT_SECRET_KEY must be set to a secure value in production")
+            if self.DATABASE_URL.startswith("sqlite"):
+                raise ValueError("DATABASE_URL must use PostgreSQL in production")
             if not self.cors_origins:
                 raise ValueError("BACKEND_CORS_ORIGINS must include your frontend URL in production")
             if "*" in self.cors_origins:

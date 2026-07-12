@@ -13,7 +13,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.schemas.user import UserCreate, UserResponse, Token, VerifyRequest, LoginRequest, ProfileUpdate, \
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, TwoFactorVerifyRequest
 from app.services.user_service import UserService
@@ -29,10 +29,6 @@ from app.middleware.activity import log_activity
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 PASSWORD_RESET_PURPOSE = "password-reset"
-AUTH_RATE_LIMIT: dict[str, list[float]] = {}
-AUTH_RATE_LIMIT_WINDOW = 60
-AUTH_RATE_LIMIT_MAX = 10
-
 
 def serialize_user(user: User) -> dict:
     preferences = user.preferences or {}
@@ -99,16 +95,6 @@ def revoke_current_session(db: Session, token: Optional[str], user_id: int) -> N
                 session.is_active = False
                 session.revoked_at = now
     db.commit()
-
-
-def check_auth_rate_limit(request: Request):
-    key = request.client.host if request.client else "unknown"
-    now = time.time()
-    hits = [hit for hit in AUTH_RATE_LIMIT.get(key, []) if now - hit < AUTH_RATE_LIMIT_WINDOW]
-    if len(hits) >= AUTH_RATE_LIMIT_MAX:
-        raise HTTPException(429, "Too many auth attempts. Please wait a minute and try again.")
-    hits.append(now)
-    AUTH_RATE_LIMIT[key] = hits
 
 
 def validate_password_strength(password: str):
@@ -257,7 +243,6 @@ def register_user(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    check_auth_rate_limit(request)
     validate_password_strength(user.password)
     created_user = UserService.create_user(db, user)
     token = generate_token(created_user.email)
@@ -268,7 +253,7 @@ def register_user(
         "Verify your Ohmatt account",
         f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}",
     )
-    log_activity(
+    log_activity(db,
         request,
         created_user.id,
         "registration",
@@ -281,7 +266,6 @@ def register_user(
 
 @router.post("/login", response_model=Token)
 def login_user(data: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    check_auth_rate_limit(request)
     user = UserService.authenticate_user(db, data.username, data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -299,7 +283,7 @@ def login_user(data: LoginRequest, request: Request, response: Response, db: Ses
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     create_user_session(db, user, access_token, request)
     set_auth_cookie(response, access_token)
-    log_activity(
+    log_activity(db,
         request,
         user.id,
         "login",
@@ -334,7 +318,7 @@ def logout(
         db.add(Blacklist(jti=token_jti, user_id=current_user.id))
     revoke_current_session(db, token, current_user.id)
     clear_auth_cookie(response)
-    log_activity(request, current_user.id, "logout", entity_type="user", entity_id=current_user.id, description="User logged out")
+    log_activity(db, request, current_user.id, "logout", entity_type="user", entity_id=current_user.id, description="User logged out")
     return {"message": t("logged_out", lang=user_language(current_user))}
 
 
@@ -352,7 +336,7 @@ def logout_everywhere(
         session.revoked_at = now
     db.commit()
     clear_auth_cookie(response)
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "logout_everywhere",
@@ -388,14 +372,14 @@ def verify_account(data: VerifyRequest, db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(400, "Invalid or expired token")
 
-    user = db_session.query(User).filter_by(email=email).first()
+    user = db.query(User).filter_by(email=email).first()
     if not user:
         raise HTTPException(400, "Invalid or expired token")
     if user.is_verified:
         return {"message": t("account_already_verified", lang=user_language(user))}
 
     user.is_verified = True
-    db_session.commit()
+    db.commit()
     return {"message": t("account_verified", lang=user_language(user))}
 
 
@@ -435,7 +419,7 @@ def update_profile(
 
     db.commit()
     db.refresh(current_user)
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "profile_update",
@@ -459,7 +443,7 @@ def change_password(
     validate_password_strength(data.new_password)
     current_user.set_password(data.new_password)
     db.commit()
-    log_activity(request, current_user.id, "password_change", entity_type="user", entity_id=current_user.id, description="Password changed")
+    log_activity(db, request, current_user.id, "password_change", entity_type="user", entity_id=current_user.id, description="Password changed")
     return {"message": t("password_changed", lang=user_language(current_user))}
 
 

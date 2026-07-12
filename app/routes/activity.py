@@ -5,7 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from datetime import datetime, timedelta
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.models.activity_log import ActivityLog
 from app.models.user import User
 from app.utils.auth import get_current_user
@@ -40,12 +40,12 @@ def serialize_activity(log: ActivityLog):
 
 @router.get("/logs")
 async def get_activity_logs(
-        action: Optional[str] = Query(None),
+        action: Optional[str] = Query(None, max_length=100),
         user_id: Optional[int] = Query(None),
-        search: Optional[str] = Query(None),
-        days: int = Query(7),
-        limit: int = Query(100),
-        offset: int = Query(0),
+        search: Optional[str] = Query(None, max_length=100),
+        days: int = Query(7, ge=1, le=365),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
@@ -75,10 +75,10 @@ async def get_activity_logs(
 @router.get("/user/{user_id}")
 async def get_user_activity_history(
         user_id: int,
-        action: Optional[str] = Query(None),
-        days: int = Query(90),
-        limit: int = Query(100),
-        offset: int = Query(0),
+        action: Optional[str] = Query(None, max_length=100),
+        days: int = Query(90, ge=1, le=3650),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
 ):

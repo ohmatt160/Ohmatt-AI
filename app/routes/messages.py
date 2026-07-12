@@ -233,7 +233,7 @@ async def send_message(
     db.add(user_msg)
     db.commit()
     db.refresh(user_msg)
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "message_sent",
@@ -255,7 +255,7 @@ async def send_message(
         db.add(ai_msg)
         db.commit()
         db.refresh(ai_msg)
-        log_activity(
+        log_activity(db,
             request,
             current_user.id,
             "ai_chat_interaction",
@@ -274,7 +274,7 @@ async def send_message(
         }
 
     # Regular user-to-user message
-    log_activity(
+    log_activity(db,
         request,
         receiver.id,
         "message_received",

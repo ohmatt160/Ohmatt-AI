@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from app.routes import api_router
 from app.config import settings
 from app.extensions import init_extensions, engine, Base
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
 
     # Middleware is applied in reverse registration order. Keep CORS outermost so
     # preflight, rate-limit, security, and error responses all receive CORS headers.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_middleware(SecurityMiddleware)
     app.add_middleware(
         CORSMiddleware,

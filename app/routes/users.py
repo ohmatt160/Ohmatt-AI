@@ -10,7 +10,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/search")
 def search_users(
-        q: str = Query(..., min_length=2),
+        q: str = Query(..., min_length=2, max_length=100),
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):

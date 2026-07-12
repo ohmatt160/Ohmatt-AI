@@ -73,7 +73,7 @@ async def create_transaction(
     db.commit()
     db.refresh(transaction)
     InsightService.generate_insights(db, current_user)
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "transaction_create",
@@ -82,7 +82,7 @@ async def create_transaction(
         description=f"Created transaction: {transaction.description}",
         metadata={"amount": transaction.amount, "category": transaction.category},
     )
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "insight_generation",
@@ -118,8 +118,10 @@ async def create_transaction(
 @router.get("", response_model=List[TransactionResponse])
 async def list_transactions(
     days: int = Query(30, ge=1, le=365),
-    category: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
+    category: Optional[str] = Query(None, max_length=100),
+    search: Optional[str] = Query(None, max_length=100),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -136,7 +138,7 @@ async def list_transactions(
     if search:
         query = query.filter(Transaction.description.ilike(f"%{search}%"))
 
-    transactions = query.order_by(Transaction.date.desc()).limit(500).all()
+    transactions = query.order_by(Transaction.date.desc()).offset(offset).limit(limit).all()
 
     return [
         {
@@ -190,7 +192,7 @@ async def get_categories(
 # app/routes/transactions.py - add
 @router.get("/insights")
 async def get_insights(
-        days: int = Query(30),
+        days: int = Query(30, ge=1, le=365),
         current_user: User = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
@@ -244,7 +246,7 @@ async def update_transaction(
 
     db.commit()
     db.refresh(transaction)
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "transaction_update",
@@ -269,7 +271,7 @@ async def delete_transaction(
     description = transaction.description
     db.delete(transaction)
     db.commit()
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "transaction_delete",
@@ -295,7 +297,7 @@ async def correct_transaction_category(
     transaction.user_category = data.category
     transaction.category = data.category
     db.commit()
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "ai_category_correction",

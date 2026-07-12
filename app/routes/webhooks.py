@@ -1,9 +1,10 @@
 # app/routes/webhooks.py
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
 import hashlib, hmac, json
-from app.extensions import db_session
+from app.extensions import get_db
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.ai_service import ai_service
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/flutterwave")
-async def flutterwave_webhook(request: Request):
+async def flutterwave_webhook(request: Request, db: Session = Depends(get_db)):
     """Receive transaction notifications from Flutterwave"""
     payload = await request.json()
     signature = request.headers.get("verif-hash", "")
@@ -33,8 +34,11 @@ async def flutterwave_webhook(request: Request):
         customer = data.get("customer", {})
         email = customer.get("email")
         if email:
-            user = db_session.query(User).filter_by(email=email).first()
+            user = db.query(User).filter_by(email=email).first()
             if user:
+                transaction_id = str(data.get("id")) if data.get("id") is not None else None
+                if transaction_id and db.query(Transaction.id).filter_by(transaction_id=transaction_id).first():
+                    return {"status": "ok"}
                 description = data.get("narration", "Flutterwave payment")
                 amount = data.get("amount", 0)
                 category, confidence = ai_service.categorize_transaction(description)
@@ -47,19 +51,19 @@ async def flutterwave_webhook(request: Request):
                     datetime=datetime.utcnow(),
                     category=category,
                     ml_confidence=confidence,
-                    transaction_id=data.get("id"),
+                    transaction_id=transaction_id,
                     currency=data.get("currency") or user_currency(user),
                     pending=False
                 )
-                db_session.add(transaction)
-                db_session.commit()
+                db.add(transaction)
+                db.commit()
                 print(f"[Webhook] Transaction created for {email}: {description} - {amount}")
 
     return {"status": "ok"}
 
 
 @router.post("/paystack")
-async def paystack_webhook(request: Request):
+async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
     """Receive transaction notifications from Paystack"""
     payload = await request.json()
     signature = request.headers.get("x-paystack-signature", "")
@@ -83,8 +87,11 @@ async def paystack_webhook(request: Request):
         customer = data.get("customer", {})
         email = customer.get("email")
         if email:
-            user = db_session.query(User).filter_by(email=email).first()
+            user = db.query(User).filter_by(email=email).first()
             if user:
+                transaction_id = str(data.get("id")) if data.get("id") is not None else None
+                if transaction_id and db.query(Transaction.id).filter_by(transaction_id=transaction_id).first():
+                    return {"status": "ok"}
                 description = data.get("metadata", {}).get("description", "Paystack payment")
                 amount = data.get("amount", 0) / 100  # Paystack uses kobo
                 category, confidence = ai_service.categorize_transaction(description)
@@ -97,12 +104,12 @@ async def paystack_webhook(request: Request):
                     datetime=datetime.utcnow(),
                     category=category,
                     ml_confidence=confidence,
-                    transaction_id=str(data.get("id")),
+                    transaction_id=transaction_id,
                     currency=data.get("currency") or user_currency(user),
                     pending=False
                 )
-                db_session.add(transaction)
-                db_session.commit()
+                db.add(transaction)
+                db.commit()
                 print(f"[Webhook] Transaction created for {email}: {description} - {amount}")
 
     return {"status": "ok"}

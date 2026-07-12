@@ -30,7 +30,7 @@ def retrain_ai_model(
     )
     trained_samples = ai_service.retrain_from_corrections(corrected)
 
-    log_activity(
+    log_activity(db,
         request,
         current_user.id,
         "ai_retrain",

@@ -49,6 +49,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
         self.requests: dict[str, deque[float]] = defaultdict(deque)
+        self.rate_limit_checks = 0
 
     async def dispatch(self, request: Request, call_next):
         input_error = await self._validate_request_input(request)
@@ -104,6 +105,16 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             client_ip = request.client.host
         key = f"{rule.method}:{rule.path}:{client_ip or 'unknown'}"
         now = time.time()
+        self.rate_limit_checks += 1
+        if self.rate_limit_checks % 256 == 0:
+            longest_window = max(item.window_seconds for item in RATE_LIMIT_RULES)
+            stale_keys = [
+                bucket_key
+                for bucket_key, hits in self.requests.items()
+                if not hits or now - hits[-1] > longest_window
+            ]
+            for bucket_key in stale_keys:
+                self.requests.pop(bucket_key, None)
         bucket = self.requests[key]
 
         while bucket and now - bucket[0] > rule.window_seconds:

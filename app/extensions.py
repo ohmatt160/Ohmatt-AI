@@ -4,21 +4,32 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
 from app.config import settings
 
+
+def normalize_database_url(url: str) -> str:
+    """Accept provider-style Postgres URLs while preserving Neon query options."""
+    if url.startswith("postgres://"):
+        return f"postgresql://{url[len('postgres://') :]}"
+    return url
+
+
+database_url = normalize_database_url(settings.DATABASE_URL)
+
 # SQLite needs special handling for concurrent requests
-if "sqlite" in settings.DATABASE_URL:
+if database_url.startswith("sqlite"):
     engine = create_engine(
-        settings.DATABASE_URL,
+        database_url,
         connect_args={"check_same_thread": False},
         poolclass=NullPool,  # No connection pooling for SQLite
     )
 else:
     engine = create_engine(
-        settings.DATABASE_URL,
+        database_url,
         pool_size=settings.DB_POOL_SIZE,
         max_overflow=settings.DB_MAX_OVERFLOW,
         pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
         pool_pre_ping=True,
         pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+        pool_use_lifo=True,
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -29,6 +40,9 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -59,12 +73,16 @@ def init_extensions(app=None):
         seed_geo_records()
         bootstrap_admin_user()
     except Exception as e:
-        print(f"[WARNING] Could not create all tables: {e}")
+        print(f"[ERROR] Could not initialize database: {e}")
+        if settings.is_production:
+            raise
+    finally:
+        db_session.remove()
 
 
 def ensure_runtime_columns():
     with engine.begin() as connection:
-        if "sqlite" in settings.DATABASE_URL:
+        if database_url.startswith("sqlite"):
             transaction_columns = {
                 row[1]
                 for row in connection.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()
@@ -104,10 +122,13 @@ def ensure_performance_indexes():
         "CREATE INDEX IF NOT EXISTS ix_bank_accounts_user_active ON bank_account (user_id, is_active)",
         "CREATE INDEX IF NOT EXISTS ix_bank_accounts_connection ON bank_account (connection_id)",
         "CREATE INDEX IF NOT EXISTS ix_bank_connections_user_active ON bank_connections (user_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_providers_api_name ON bank_providers (api_name)",
         "CREATE INDEX IF NOT EXISTS ix_bank_transactions_user_date ON bank_transaction (user_id, date)",
         "CREATE INDEX IF NOT EXISTS ix_bank_transactions_account_date ON bank_transaction (bank_account_id, date)",
         "CREATE INDEX IF NOT EXISTS ix_user_sessions_user_active_seen ON user_sessions (user_id, is_active, last_seen_at)",
         "CREATE INDEX IF NOT EXISTS ix_tasks_user_date ON tasks (user_id, date)",
+        "CREATE INDEX IF NOT EXISTS ix_budgets_user_month ON budgets (user_id, month)",
+        "CREATE INDEX IF NOT EXISTS ix_recurring_user_active_date ON recurring_transactions (user_id, is_active, next_date)",
     ]
     with engine.begin() as connection:
         for statement in statements:

@@ -15,7 +15,7 @@ Set these Space secrets:
 ENV=production
 PORT=7860
 AUTO_SEED_GEO=true
-DATABASE_URL=sqlite:////data/ohmatt.db
+DATABASE_URL=postgresql://USER:PASSWORD@HOST-pooler.REGION.aws.neon.tech/DATABASE?sslmode=require
 SECRET_KEY=replace-with-a-long-random-secret
 JWT_SECRET_KEY=replace-with-a-different-long-random-secret
 AUTH_COOKIE_NAME=ohmatt_access_token

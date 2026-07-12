@@ -80,7 +80,7 @@ async def get_stats(
 
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
-        search: Optional[str] = Query(None),
+        search: Optional[str] = Query(None, max_length=100),
         admin: User = Depends(admin_required),
         db: Session = Depends(get_db)
 ):

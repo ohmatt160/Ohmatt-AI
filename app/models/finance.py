@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.extensions import Base
@@ -21,7 +21,10 @@ class TransactionCategory(Base):
 
 class Budget(Base):
     __tablename__ = "budgets"
-    __table_args__ = (UniqueConstraint("user_id", "category", "month", name="uq_user_budget_month_category"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "category", "month", name="uq_user_budget_month_category"),
+        Index("ix_budgets_user_month", "user_id", "month"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -37,6 +40,9 @@ class Budget(Base):
 
 class RecurringTransaction(Base):
     __tablename__ = "recurring_transactions"
+    __table_args__ = (
+        Index("ix_recurring_user_active_date", "user_id", "is_active", "next_date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)

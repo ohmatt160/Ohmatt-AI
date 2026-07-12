@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 
-DEFAULT_PROVIDER = "stripe"
+DEFAULT_PROVIDER = None
+
+# Only providers with a server-side connector may appear in Bank Connect.
+IMPLEMENTED_BANKING_PROVIDERS = frozenset({"flutterwave", "mono", "paystack", "plaid"})
 
 PROVIDER_REGIONS = {
     "AE": ["stripe"],
@@ -43,7 +46,8 @@ PROVIDER_METADATA = {
 
 def get_providers_for_country(country_code: str | None) -> list[str]:
     code = (country_code or "").upper()
-    return PROVIDER_REGIONS.get(code, [DEFAULT_PROVIDER])
+    providers = PROVIDER_REGIONS.get(code, [])
+    return [code for code in providers if code in IMPLEMENTED_BANKING_PROVIDERS]
 
 
 def provider_metadata(provider_code: str) -> dict:

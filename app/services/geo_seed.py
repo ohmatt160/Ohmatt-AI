@@ -47,18 +47,27 @@ LANGUAGES = [
 ]
 
 
-def upsert_model(model, lookup: dict, values: dict) -> bool:
-    record = db_session.query(model).filter_by(**lookup).first()
-    if not record:
-        db_session.add(model(**values))
-        return True
-
-    changed = False
-    for key, value in values.items():
-        if getattr(record, key) != value:
-            setattr(record, key, value)
-            changed = True
-    return changed
+def upsert_models(model, values_list: list[dict]) -> int:
+    existing = {
+        record.code: record
+        for record in db_session.query(model)
+        .filter(model.code.in_([values["code"] for values in values_list]))
+        .all()
+    }
+    changed_count = 0
+    for values in values_list:
+        record = existing.get(values["code"])
+        if not record:
+            db_session.add(model(**values))
+            changed_count += 1
+            continue
+        changed = False
+        for key, value in values.items():
+            if getattr(record, key) != value:
+                setattr(record, key, value)
+                changed = True
+        changed_count += int(changed)
+    return changed_count
 
 
 def seed_geo_data() -> dict:
@@ -68,17 +77,9 @@ def seed_geo_data() -> dict:
         "languages": 0,
     }
 
-    for continent in CONTINENTS:
-        if upsert_model(Continent, {"code": continent["code"]}, continent):
-            created_or_updated["continents"] += 1
-
-    for language in LANGUAGES:
-        if upsert_model(Language, {"code": language["code"]}, language):
-            created_or_updated["languages"] += 1
-
-    for country in COUNTRIES:
-        if upsert_model(Country, {"code": country["code"]}, country):
-            created_or_updated["countries"] += 1
+    created_or_updated["continents"] = upsert_models(Continent, CONTINENTS)
+    created_or_updated["languages"] = upsert_models(Language, LANGUAGES)
+    created_or_updated["countries"] = upsert_models(Country, COUNTRIES)
 
     db_session.commit()
 
