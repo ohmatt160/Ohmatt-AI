@@ -19,10 +19,10 @@ class BankTokenExchangeRequest(BaseModel):
 class BankAccountVerificationRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    bank_code: str = Field(..., alias="bankCode")
-    bank_name: str = Field(..., alias="bankName")
-    account_number: str = Field(..., alias="accountNumber")
-    account_bank: str = Field(..., alias="accountBank")
+    bank_code: str = Field(..., alias="bankCode", min_length=2, max_length=30)
+    bank_name: str = Field(..., alias="bankName", min_length=1, max_length=200)
+    account_number: str = Field(..., alias="accountNumber", pattern=r"^\d{6,20}$")
+    account_bank: str = Field(..., alias="accountBank", pattern=r"^[A-Za-z0-9_-]{2,20}$")
 
 class BankDisconnectRequest(BaseModel):
     id: int = Field(...)
@@ -68,4 +68,3 @@ class OnboardingPayload(BaseModel):
 
 class PushPayload(BaseModel):
     enabled: bool = True
-

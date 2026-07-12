@@ -11,6 +11,7 @@ from app.models.bank_account import BankAccount
 from app.models.bank_transaction import BankTransaction
 from app.models.bank_provider import BankProvider
 from app.models.transaction import Transaction
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ class BankingService:
         self.ai_service = ai_service  # Use singleton
 
     def get_provider_for_user(self, db: Session, user_id: int) -> Optional[Any]:
+        user = db.query(User).filter(User.id == user_id).first()
+        country = getattr(user, "country", None) if user else None
+        default_currency = (
+            country.currency
+            if country and country.currency
+            else ((user.preferences or {}).get("currency", "USD") if user else "USD")
+        )
         connection = db.query(BankConnection).filter(
             BankConnection.user_id == user_id,
             BankConnection.is_active == True
@@ -47,7 +55,8 @@ class BankingService:
             config.update({
                 'client_id': provider.api_config.get('client_id') if provider.api_config else None,
                 'secret': provider.api_config.get('secret') if provider.api_config else None,
-                'environment': provider.api_config.get('environment', 'sandbox') if provider.api_config else 'sandbox'
+                'environment': provider.api_config.get('environment', 'sandbox') if provider.api_config else 'sandbox',
+                'default_currency': default_currency,
             })
             return PlaidProvider(config)
         elif provider.api_name == 'flutterwave':
@@ -56,7 +65,8 @@ class BankingService:
                 'public_key': provider.api_config.get('public_key') if provider.api_config else None,
                 'encryption_key': provider.api_config.get('encryption_key') if provider.api_config else None,
                 'base_url': provider.api_config.get('base_url',
-                                                    'https://api.flutterwave.com/v3') if provider.api_config else 'https://api.flutterwave.com/v3'
+                                                    'https://api.flutterwave.com/v3') if provider.api_config else 'https://api.flutterwave.com/v3',
+                'default_currency': default_currency,
             })
             return FlutterwaveProvider(config)
         else:

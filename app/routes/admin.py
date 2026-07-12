@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.config import settings
 from app.models.bank_account import BankAccount
 from app.models.bank_connection import BankConnection
@@ -30,18 +31,21 @@ async def get_stats(
         db: Session = Depends(get_db)
 ):
     """Get system statistics"""
-    users = db_session.query(User).all()
-    total_users = len(users)
-    active_users = sum(1 for user in users if (user.preferences or {}).get("is_active", True))
-    admin_users = sum(1 for user in users if user.is_admin)
-    verified_users = sum(1 for user in users if user.is_verified)
-    total_transactions = db_session.query(Transaction).count()
-    pending_transactions = db_session.query(Transaction).filter_by(pending=True).count()
-    total_accounts = db_session.query(BankAccount).count()
-    active_accounts = db_session.query(BankAccount).filter_by(is_active=True).count()
-    total_connections = db_session.query(BankConnection).count()
-    active_connections = db_session.query(BankConnection).filter_by(is_active=True).count()
-    active_providers = db_session.query(BankProvider).filter_by(is_active=True).count()
+    total_users = db.query(func.count(User.id)).scalar() or 0
+    active_users = sum(
+        1
+        for (preferences,) in db.query(User.preferences).yield_per(500)
+        if (preferences or {}).get("is_active", True)
+    )
+    admin_users = db.query(func.count(User.id)).filter(User.is_admin == True).scalar() or 0
+    verified_users = db.query(func.count(User.id)).filter(User.is_verified == True).scalar() or 0
+    total_transactions = db.query(func.count(Transaction.id)).scalar() or 0
+    pending_transactions = db.query(func.count(Transaction.id)).filter(Transaction.pending == True).scalar() or 0
+    total_accounts = db.query(func.count(BankAccount.id)).scalar() or 0
+    active_accounts = db.query(func.count(BankAccount.id)).filter(BankAccount.is_active == True).scalar() or 0
+    total_connections = db.query(func.count(BankConnection.id)).scalar() or 0
+    active_connections = db.query(func.count(BankConnection.id)).filter(BankConnection.is_active == True).scalar() or 0
+    active_providers = db.query(func.count(BankProvider.id)).filter(BankProvider.is_active == True).scalar() or 0
 
     return {
         "users": {
@@ -81,7 +85,7 @@ async def list_users(
         db: Session = Depends(get_db)
 ):
     """List all users (admin only)"""
-    query = db_session.query(User)
+    query = db.query(User)
     if search:
         query = query.filter(
             User.username.ilike(f"%{search}%") | User.email.ilike(f"%{search}%")
@@ -114,14 +118,14 @@ async def update_role(
         db: Session = Depends(get_db)
 ):
     """Update user role (admin only)"""
-    user = db_session.query(User).get(user_id)
+    user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     if user.id == admin.id:
         raise HTTPException(400, "Cannot change your own role")
 
     user.is_admin = (role == "admin")
-    db_session.commit()
+    db.commit()
     return {"message": f"User {user.username} is now {'admin' if user.is_admin else 'user'}"}
 
 
@@ -132,7 +136,7 @@ async def delete_user(
         db: Session = Depends(get_db)
 ):
     """Deactivate a user (admin only)"""
-    user = db_session.query(User).get(user_id)
+    user = db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     if user.id == admin.id:
@@ -141,5 +145,5 @@ async def delete_user(
     preferences = dict(user.preferences or {})
     preferences["is_active"] = False
     user.preferences = preferences
-    db_session.commit()
+    db.commit()
     return {"message": f"User {user.username} deactivated"}

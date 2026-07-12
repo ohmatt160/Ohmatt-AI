@@ -8,13 +8,14 @@ from app.providers.base_provider import BankingProvider
 
 
 class PaystackProvider(BankingProvider):
-    """Paystack banking provider for Nigeria and Ghana"""
+    """Paystack banking provider for supported African markets"""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.secret_key = config.get('secret_key')
         self.public_key = config.get('public_key')
         self.base_url = config.get('base_url', 'https://api.paystack.co')
+        self.default_currency = (config.get('default_currency') or 'USD').upper()
 
         self.headers = {
             'Authorization': f'Bearer {self.secret_key}',
@@ -39,7 +40,7 @@ class PaystackProvider(BankingProvider):
         }
 
     def resolve_account(self, account_number: str, bank_code: str) -> Dict[str, Any]:
-        """Resolve Nigerian/Ghanaian bank account details"""
+        """Resolve bank account details in Paystack-supported countries"""
         url = f"{self.base_url}/bank/resolve"
 
         params = {
@@ -73,7 +74,7 @@ class PaystackProvider(BankingProvider):
                 'provider': 'paystack'
             }
 
-    def list_banks(self, country: str = 'nigeria') -> List[Dict[str, Any]]:
+    def list_banks(self, country: str = '') -> List[Dict[str, Any]]:
         """List supported banks"""
         url = f"{self.base_url}/bank"
         params = {'country': country} if country else {}
@@ -89,7 +90,7 @@ class PaystackProvider(BankingProvider):
                         'code': bank['code'],
                         'name': bank['name'],
                         'slug': bank['slug'],
-                        'country': bank.get('country', 'nigeria')
+                        'country': bank.get('country')
                     })
             return banks
 
@@ -125,7 +126,7 @@ class PaystackProvider(BankingProvider):
                         'transaction_id': txn.get('id'),
                         'reference': txn.get('reference'),
                         'amount': txn.get('amount') / 100 if txn.get('amount') else 0,
-                        'currency': txn.get('currency', 'NGN'),
+                        'currency': txn.get('currency') or self.default_currency,
                         'status': txn.get('status'),
                         'channel': txn.get('channel'),
                         'paid_at': txn.get('paid_at'),
@@ -172,7 +173,7 @@ class PaystackProvider(BankingProvider):
                 return {
                     'name': bank['name'],
                     'code': bank['code'],
-                    'country': bank.get('country', 'nigeria'),
+                    'country': bank.get('country'),
                     'provider': 'paystack'
                 }
 
@@ -203,7 +204,7 @@ class PaystackProvider(BankingProvider):
             'transaction_id': data.get('id'),
             'reference': data.get('reference'),
             'amount': data.get('amount', 0) / 100 if data.get('amount') else 0,
-            'currency': data.get('currency', 'NGN'),
+            'currency': data.get('currency') or self.default_currency,
             'status': data.get('status'),
             'customer': data.get('customer', {}),
             'authorization': data.get('authorization', {})

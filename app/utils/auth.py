@@ -2,8 +2,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import uuid4
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from app.extensions import get_db
 from app.models.user import User
@@ -11,6 +12,23 @@ from app.config import settings
 from itsdangerous import URLSafeTimedSerializer
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+SESSION_TOUCH_INTERVAL = timedelta(minutes=1)
+
+
+def get_request_token(
+    request: Request,
+    authorization_token: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve app auth without confusing it with a private-Space HF token."""
+    forwarded = request.headers.get("x-ohmatt-authorization", "").strip()
+    if forwarded.lower().startswith("bearer "):
+        return forwarded[7:].strip()
+
+    token = authorization_token
+    if token and token.startswith("hf_"):
+        token = None
+    return token or request.cookies.get(settings.AUTH_COOKIE_NAME)
+
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -36,26 +54,27 @@ def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    token = token or request.cookies.get(settings.AUTH_COOKIE_NAME)
+    token = get_request_token(request, token)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Check blacklist
     from app.models.blacklist import Blacklist
     from app.models.session import UserSession
-    if db.query(Blacklist).filter_by(jti=token).first():
-        raise HTTPException(status_code=401, detail="Token revoked")
 
     payload = decode_token_payload(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
     email = payload.get("sub")
     token_jti = payload.get("jti")
+    if token_jti and db.query(Blacklist).filter_by(jti=token_jti).first():
+        raise HTTPException(status_code=401, detail="Token revoked")
     if not email:
         raise HTTPException(status_code=401, detail="Invalid token")
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if (user.preferences or {}).get("is_active", True) is False:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
     if token_jti:
         session = (
             db.query(UserSession)
@@ -74,10 +93,22 @@ def get_current_user(
         if session.last_seen_at and now - session.last_seen_at > idle_timeout:
             session.is_active = False
             session.revoked_at = now
-            db.commit()
+            try:
+                db.commit()
+            except OperationalError:
+                db.rollback()
             raise HTTPException(status_code=401, detail="Session expired")
-        session.last_seen_at = now
-        db.commit()
+
+        should_touch_session = (
+            session.last_seen_at is None
+            or now - session.last_seen_at >= SESSION_TOUCH_INTERVAL
+        )
+        if should_touch_session:
+            session.last_seen_at = now
+            try:
+                db.commit()
+            except OperationalError:
+                db.rollback()
     return user
 
 def generate_token(email: str, purpose: str = "email-verification") -> str:

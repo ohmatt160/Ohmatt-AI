@@ -12,6 +12,15 @@ from app.models.user import User
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+def serialize_task(task: Task) -> dict:
+    return {
+        "id": task.id,
+        "task": task.task,
+        "date": task.date.strftime("%Y-%m-%d"),
+        "time": task.time.strftime("%H:%M"),
+    }
+
+
 @router.post("/", response_model=TaskResponse)
 def create_task(
         task: TaskCreate,
@@ -24,11 +33,16 @@ def create_task(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date or time format")
 
-    db_task = Task(task=task.task, date=task_datetime, time=task_datetime)
+    db_task = Task(
+        user_id=current_user.id,
+        task=task.task,
+        date=task_datetime,
+        time=task_datetime,
+    )
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
-    return db_task
+    return serialize_task(db_task)
 
 
 @router.get("/", response_model=List[TaskResponse])
@@ -36,5 +50,11 @@ def get_tasks(
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    tasks = db.query(Task).all()
-    return tasks
+    tasks = (
+        db.query(Task)
+        .filter(Task.user_id == current_user.id)
+        .order_by(Task.date.asc())
+        .limit(500)
+        .all()
+    )
+    return [serialize_task(task) for task in tasks]

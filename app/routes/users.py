@@ -1,7 +1,7 @@
 # app/routes/users.py (NEW FILE)
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.models.user import User
 from app.utils.auth import get_current_user
 
@@ -15,7 +15,7 @@ def search_users(
         db: Session = Depends(get_db)
 ):
     """Search users by username or email"""
-    users = db_session.query(User).filter(
+    users = db.query(User).filter(
         (User.username.ilike(f"%{q}%")) | (User.email.ilike(f"%{q}%"))
     ).limit(20).all()
 

@@ -112,4 +112,5 @@ htmlcov/
 key.py
 .env.production.example
 .dockerignore
+!.dockerignore
 *.pkl

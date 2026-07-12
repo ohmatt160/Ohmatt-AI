@@ -6,7 +6,10 @@ from app.extensions import get_db, db_session
 from app.models.country import Country
 from app.models.continent import Continent
 from app.models.language import Language
+from app.models.user import User
 from app.services.geo_seed import seed_geo_data as seed_geo_records
+from app.utils.auth import get_current_user
+from app.utils.i18n import t
 
 router = APIRouter(prefix="/geo", tags=["geography"])
 
@@ -183,10 +186,15 @@ async def get_language(language_code: str, db: Session = Depends(get_db)):
 
 
 @router.post("/seed")
-async def seed_geo_data():
+async def seed_geo_data(
+    lang: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+):
     """Seed countries and languages"""
+    if not current_user.is_admin:
+        raise HTTPException(403, "Admin access required")
     result = seed_geo_records()
     return {
-        "message": "Geography data seeded",
+        "message": t("geography_seeded", lang=lang),
         **result,
     }

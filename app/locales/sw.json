@@ -1,0 +1,18 @@
+{
+  "account_already_verified": "Akaunti tayari imethibitishwa",
+  "account_verified": "Akaunti imethibitishwa",
+  "bank_disconnected": "Benki imetenganishwa",
+  "budget_deleted": "Bajeti imefutwa",
+  "category_correction_saved": "Marekebisho ya kategoria yamehifadhiwa",
+  "category_deleted": "Kategoria imefutwa",
+  "geography_seeded": "Data ya jiografia imeanzishwa",
+  "message_deleted": "Ujumbe umefutwa",
+  "message_edited": "Ujumbe umehaririwa",
+  "message_forwarded": "Ujumbe umetumwa mbele",
+  "recurring_transaction_created": "Muamala wa kujirudia umeundwa",
+  "recurring_transaction_deleted": "Muamala wa kujirudia umefutwa",
+  "transaction_added": "Muamala umeongezwa",
+  "transaction_deleted": "Muamala umefutwa",
+  "transaction_updated": "Muamala umesasishwa",
+  "uncategorized": "Haijapangwa"
+}

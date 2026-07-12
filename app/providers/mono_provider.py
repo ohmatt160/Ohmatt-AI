@@ -7,13 +7,14 @@ from app.providers.base_provider import BankingProvider
 
 
 class MonoProvider(BankingProvider):
-    """Mono banking provider for Nigeria"""
+    """Mono banking provider for markets supported by Mono"""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.secret_key = config.get('secret_key')
         self.public_key = config.get('public_key')
         self.base_url = config.get('base_url', 'https://api.withmono.com')
+        self.default_currency = (config.get('default_currency') or 'USD').upper()
 
         self.headers = {
             'Accept': 'application/json',
@@ -79,12 +80,12 @@ class MonoProvider(BankingProvider):
                     'name': account.get('account', ''),
                     'account_number': account.get('accountNumber', ''),
                     'type': account.get('type', 'savings'),
-                    'currency': account.get('currency', 'NGN'),
+                    'currency': account.get('currency') or self.default_currency,
                     'balances': {
                         'available': account.get('balance', 0) / 100 if account.get('balance') else 0,
                         'current': account.get('balance', 0) / 100 if account.get('balance') else 0,
                         'limit': 0,
-                        'currency': account.get('currency', 'NGN')
+                        'currency': account.get('currency') or self.default_currency
                     },
                     'institution': {
                         'name': account.get('institution', {}).get('name', ''),
@@ -128,7 +129,7 @@ class MonoProvider(BankingProvider):
                         'merchant_name': txn.get('beneficiary', ''),
                         'category': txn.get('category', ''),
                         'type': txn.get('type', ''),
-                        'currency': txn.get('currency', 'NGN'),
+                        'currency': txn.get('currency') or self.default_currency,
                         'pending': False,
                         'provider': 'mono'
                     })
@@ -153,7 +154,7 @@ class MonoProvider(BankingProvider):
                 account = data['account']
                 balances.append({
                     'account_id': account.get('_id'),
-                    'currency': account.get('currency', 'NGN'),
+                    'currency': account.get('currency') or self.default_currency,
                     'available': account.get('balance', 0) / 100 if account.get('balance') else 0,
                     'ledger': account.get('balance', 0) / 100 if account.get('balance') else 0
                 })
@@ -192,7 +193,7 @@ class MonoProvider(BankingProvider):
             return {'name': 'Unknown Bank', 'code': bank_code}
 
     def verify_bank_account(self, account_number: str, bank_code: str) -> Dict[str, Any]:
-        """Verify Nigerian bank account details"""
+        """Verify bank account details where the provider supports it"""
         url = f"{self.base_url}/v1/cac/company/{account_number}"
 
         try:
@@ -260,7 +261,7 @@ class MonoProvider(BankingProvider):
                 return {
                     'monthly_average': income.get('monthlyAverage', 0) / 100,
                     'total_income': income.get('totalIncome', 0) / 100,
-                    'currency': 'NGN',
+                    'currency': self.default_currency,
                     'provider': 'mono'
                 }
 

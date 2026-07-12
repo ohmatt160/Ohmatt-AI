@@ -1,227 +1,154 @@
-from typing import Dict, Any, List, Optional
-import requests
+import logging
+import threading
+import time
 import uuid
+from typing import Any, Dict, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from app.providers.base_provider import BankingProvider
 
 
-
+logger = logging.getLogger(__name__)
 
 
 class FlutterwaveProvider(BankingProvider):
-    """Flutterwave banking provider for Africa"""
+    """Server-side Flutterwave v3 client for verified bank accounts."""
+
+    _bank_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+    _cache_lock = threading.Lock()
+    _bank_cache_seconds = 3600
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.secret_key = config.get('secret_key')
-        self.public_key = config.get('public_key')
-        self.encryption_key = config.get('encryption_key')
-        self.base_url = config.get('base_url', 'https://api.flutterwave.com/v3')
+        self.enabled = bool(config.get("enabled", False))
+        self.secret_key = (config.get("secret_key") or "").strip()
+        self.base_url = config.get("base_url", "https://api.flutterwave.com/v3").rstrip("/")
+        self.timeout = (3.05, 12)
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.secret_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+        # Retry reads only. Retrying account resolution POSTs could duplicate billable work.
+        retries = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            backoff_factor=0.2,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+            respect_retry_after_header=True,
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retries, pool_connections=20, pool_maxsize=50))
 
-        self.headers = {
-            'Authorization': f'Bearer {self.secret_key}',
-            'Content-Type': 'application/json'
-        }
+    def _ensure_configured(self) -> None:
+        if not self.enabled or not self.secret_key:
+            raise RuntimeError("Flutterwave is not configured")
+
+    @staticmethod
+    def _provider_error(response: requests.Response, fallback: str) -> str:
+        if response.status_code == 401:
+            return "Bank verification is temporarily unavailable"
+        if response.status_code == 429:
+            return "Too many verification attempts. Please try again shortly"
+        try:
+            payload = response.json()
+            message = payload.get("message") or payload.get("error", {}).get("message")
+            if isinstance(message, str) and message:
+                return message[:200]
+        except (ValueError, AttributeError):
+            pass
+        return fallback
 
     def create_link_token(self, user_id: str, country_code: str) -> Dict[str, Any]:
-        """Create Flutterwave bank connection link"""
-        # For Flutterwave, we typically redirect to their OAuth flow
-        # or use account verification endpoints
-
-        # Generate a unique reference
-        import uuid
-        tx_ref = f"oh-matt-finance-{user_id}-{uuid.uuid4().hex[:8]}"
-
-        # Create redirect URL for OAuth
-        redirect_url = f"https://your-app.com/banking/callback/flutterwave"
-
-        # Depending on country, use appropriate bank connection method
-        if country_code == 'NG':
-            # Nigeria - use Bank Account Verification or Transfers
-            return {
-                'provider': 'flutterwave',
-                'country': country_code,
-                'auth_type': 'account_verification',
-                'tx_ref': tx_ref,
-                'instructions': 'Verify the account number with the customer bank code.'
-            }
-        else:
-            # Other African countries - use OAuth where available
-            return {
-                'provider': 'flutterwave',
-                'country': country_code,
-                'auth_type': 'oauth_redirect',
-                'redirect_url': f"{self.base_url}/oauth/authorize",
-                'tx_ref': tx_ref,
-                'scopes': ['read', 'transactions']
-            }
+        self._ensure_configured()
+        return {
+            "provider": "flutterwave",
+            "country": country_code.upper(),
+            "auth_type": "account_verification",
+            "reference": f"bank-link-{user_id}-{uuid.uuid4().hex}",
+            "instructions": "Select a bank and verify the account holder name.",
+        }
 
     def exchange_token(self, authorization_code: str, metadata: Dict) -> Dict[str, Any]:
-        """Exchange authorization code for access token"""
-        # Flutterwave OAuth token exchange
-        token_url = f"{self.base_url}/oauth/token"
+        return {"success": False, "error": "Flutterwave uses account verification, not OAuth linking"}
 
-        data = {
-            'grant_type': 'authorization_code',
-            'code': authorization_code,
-            'client_id': self.public_key,
-            'client_secret': self.secret_key,
-            'redirect_uri': metadata.get('redirect_uri')
-        }
+    def list_banks(self, country: str) -> List[Dict[str, Any]]:
+        self._ensure_configured()
+        country = country.upper()
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._bank_cache.get(country)
+            if cached and cached[0] > now:
+                return cached[1]
 
-        response = requests.post(token_url, json=data, headers=self.headers)
-        response.raise_for_status()
+        response = self.session.get(
+            f"{self.base_url}/banks/{country}",
+            params={"include_provider_type": "1"},
+            timeout=self.timeout,
+        )
+        if response.status_code != 200:
+            logger.warning("Flutterwave bank list failed status=%s country=%s", response.status_code, country)
+            raise RuntimeError(self._provider_error(response, "Could not load banks"))
 
-        token_data = response.json()
+        payload = response.json()
+        banks = [
+            {"id": item.get("id"), "code": str(item.get("code", "")), "name": item.get("name", "")}
+            for item in payload.get("data", [])
+            if item.get("code") and item.get("name") and item.get("type", "BANK") != "MOBILEMONEY"
+        ]
+        banks.sort(key=lambda item: item["name"].casefold())
+        with self._cache_lock:
+            self._bank_cache[country] = (now + self._bank_cache_seconds, banks)
+        return banks
 
-        return {
-            'access_token': token_data['access_token'],
-            'refresh_token': token_data.get('refresh_token'),
-            'expires_in': token_data.get('expires_in'),
-            'provider': 'flutterwave'
-        }
-
-    def verify_bank_account(self, account_number: str, bank_code: str, country: str = 'NG') -> Dict[str, Any]:
-        """Verify Nigerian bank account (Flutterwave's strength)"""
-        url = f"{self.base_url}/accounts/resolve"
-
-        data = {
-            'account_number': account_number,
-            'account_bank': bank_code
-        }
-
-        response = requests.post(url, json=data, headers=self.headers)
+    def verify_bank_account(self, account_number: str, bank_code: str, country: str = "") -> Dict[str, Any]:
+        self._ensure_configured()
+        trace_id = str(uuid.uuid4())
+        try:
+            response = self.session.post(
+                f"{self.base_url}/accounts/resolve",
+                json={"account_number": account_number, "account_bank": bank_code},
+                headers={"X-Trace-Id": trace_id},
+                timeout=self.timeout,
+            )
+        except requests.Timeout:
+            return {"success": False, "error": "Bank verification timed out. Please try again"}
+        except requests.RequestException:
+            logger.exception("Flutterwave account resolution transport failure trace_id=%s", trace_id)
+            return {"success": False, "error": "Bank verification is temporarily unavailable"}
 
         try:
             result = response.json()
         except ValueError:
             result = {}
+        if response.status_code == 200 and result.get("status") == "success":
+            data = result.get("data") or {}
+            return {
+                "success": True,
+                "account_number": str(data.get("account_number") or account_number),
+                "account_name": data.get("account_name"),
+                "bank_code": bank_code,
+                "country": country,
+            }
 
-        if response.status_code == 200 and result.get('status') == 'success':
-            return {
-                'success': True,
-                'account_number': result['data']['account_number'],
-                'account_name': result['data']['account_name'],
-                'bank_code': bank_code,
-                'country': country
-            }
-        else:
-            return {
-                'success': False,
-                'error': result.get('message', 'Verification failed')
-            }
+        logger.info("Flutterwave account resolution rejected status=%s trace_id=%s", response.status_code, trace_id)
+        return {"success": False, "error": self._provider_error(response, "Account verification failed")}
 
     def get_accounts(self, access_token: str) -> List[Dict[str, Any]]:
-        """Get bank accounts connected via OAuth"""
-        # Note: Flutterwave's OAuth for bank accounts might be limited
-        # Most African APIs focus on payments/transfers, not full account access
-
-        # For now, return empty or use alternative methods
         return []
 
-    def get_transactions(self, access_token: str,
-                         start_date: str,
-                         end_date: str,
+    def get_transactions(self, access_token: str, start_date: str, end_date: str,
                          account_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Get transactions - might use transfers API for African context"""
-        # African providers often don't provide full transaction history API
-        # We might need to track transactions via webhooks or transfers
-
-        # For Flutterwave, we can get transfer history
-        url = f"{self.base_url}/transfers"
-        params = {
-            'from': start_date,
-            'to': end_date,
-            'status': 'successful'
-        }
-
-        response = requests.get(url, headers=self.headers, params=params)
-
-        transactions = []
-        if response.status_code == 200:
-            data = response.json()
-            for transfer in data.get('data', []):
-                transactions.append({
-                    'transaction_id': transfer.get('id'),
-                    'amount': transfer.get('amount'),
-                    'currency': transfer.get('currency'),
-                    'narration': transfer.get('narration'),
-                    'reference': transfer.get('reference'),
-                    'status': transfer.get('status'),
-                    'date': transfer.get('created_at'),
-                    'type': 'transfer',
-                    'provider': 'flutterwave'
-                })
-
-        return transactions
+        return []
 
     def get_balances(self, access_token: str,
                      account_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Get balances - might use wallet/balance API"""
-        url = f"{self.base_url}/balances"
-
-        response = requests.get(url, headers=self.headers)
-
-        balances = []
-        if response.status_code == 200:
-            data = response.json()
-            for balance in data.get('data', []):
-                balances.append({
-                    'currency': balance.get('currency'),
-                    'available_balance': balance.get('available_balance'),
-                    'ledger_balance': balance.get('ledger_balance'),
-                    'provider': 'flutterwave'
-                })
-
-        return balances
-
-    def create_transfer(self, account_bank: str, account_number: str,
-                        amount: float, currency: str, narration: str) -> Dict[str, Any]:
-        """Create bank transfer (common in African fintech)"""
-        url = f"{self.base_url}/transfers"
-
-        import uuid
-        data = {
-            'account_bank': account_bank,
-            'account_number': account_number,
-            'amount': amount,
-            'currency': currency,
-            'narration': narration,
-            'reference': f"transfer-{uuid.uuid4().hex[:10]}",
-            'callback_url': 'https://your-webhook-url.com/flutterwave'
-        }
-
-        response = requests.post(url, json=data, headers=self.headers)
-
-        if response.status_code == 200:
-            result = response.json()
-            return {
-                'success': True,
-                'transfer_id': result['data']['id'],
-                'reference': result['data']['reference'],
-                'status': result['data']['status']
-            }
-        else:
-            return {
-                'success': False,
-                'error': response.json().get('message', 'Transfer failed')
-            }
+        return []
 
     def get_institution(self, bank_code: str) -> Dict[str, Any]:
-        """Get bank/institution information"""
-        url = f"{self.base_url}/banks/{bank_code}"
-
-        response = requests.get(url, headers=self.headers)
-
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'code': data['data']['code'],
-                'name': data['data']['name'],
-                'country': data['data'].get('country', 'NG')
-            }
-
-        return {
-            'name': 'Unknown Bank',
-            'code': bank_code
-        }
+        return {"name": "Bank", "code": bank_code}

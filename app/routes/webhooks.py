@@ -8,6 +8,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.ai_service import ai_service
 from app.config import settings
+from app.utils.i18n import user_currency
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -18,8 +19,10 @@ async def flutterwave_webhook(request: Request):
     payload = await request.json()
     signature = request.headers.get("verif-hash", "")
 
-    # Verify signature (add your secret hash)
-    if signature != settings.FLUTTERWAVE_SECRET_HASH:
+    expected_signature = settings.FLUTTERWAVE_WEBHOOK_SECRET
+    if not expected_signature:
+        raise HTTPException(503, "Webhook is not configured")
+    if not signature or not hmac.compare_digest(signature, expected_signature):
         raise HTTPException(401, "Invalid signature")
 
     event = payload.get("event")
@@ -45,7 +48,7 @@ async def flutterwave_webhook(request: Request):
                     category=category,
                     ml_confidence=confidence,
                     transaction_id=data.get("id"),
-                    currency=data.get("currency", "NGN"),
+                    currency=data.get("currency") or user_currency(user),
                     pending=False
                 )
                 db_session.add(transaction)
@@ -64,14 +67,16 @@ async def paystack_webhook(request: Request):
     event = payload.get("event")
     data = payload.get("data", {})
 
-    # Verify Paystack signature
-    if settings.PAYSTACK_SECRET_KEY:
+    webhook_secret = settings.PAYSTACK_WEBHOOK_SECRET or settings.PAYSTACK_SECRET_KEY
+    if not webhook_secret:
+        raise HTTPException(503, "Webhook is not configured")
+    if webhook_secret:
         computed = hmac.new(
-            settings.PAYSTACK_SECRET_KEY.encode('utf-8'),
+            webhook_secret.encode('utf-8'),
             (await request.body()),
             hashlib.sha512
         ).hexdigest()
-        if signature and not hmac.compare_digest(computed, signature):
+        if not signature or not hmac.compare_digest(computed, signature):
             raise HTTPException(401, "Invalid signature")
 
     if event == "charge.success":
@@ -93,7 +98,7 @@ async def paystack_webhook(request: Request):
                     category=category,
                     ml_confidence=confidence,
                     transaction_id=str(data.get("id")),
-                    currency=data.get("currency", "NGN"),
+                    currency=data.get("currency") or user_currency(user),
                     pending=False
                 )
                 db_session.add(transaction)

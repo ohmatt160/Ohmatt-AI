@@ -1,17 +1,19 @@
 # app/routes/transactions.py
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, timedelta
 
 
-from app.extensions import get_db, db_session
+from app.extensions import get_db
 from app.models.user import User
 from app.models.transaction import Transaction
 from app.schemas.transactions import TransactionCreate, TransactionResponse
 from app.services.ai_service import ai_service
 from app.utils.auth import get_current_user
+from app.utils.i18n import t, user_language
 # Add this after transaction is saved
 from app.services.insight_service import InsightService
 from app.models.insight import Insight
@@ -67,10 +69,10 @@ async def create_transaction(
         pending=False
     )
 
-    db_session.add(transaction)
-    db_session.commit()
-    db_session.refresh(transaction)
-    InsightService.generate_insights(db_session, current_user)
+    db.add(transaction)
+    db.commit()
+    db.refresh(transaction)
+    InsightService.generate_insights(db, current_user)
     log_activity(
         request,
         current_user.id,
@@ -90,7 +92,7 @@ async def create_transaction(
 
     # Get insights
     recent_transactions = (
-        db_session.query(Transaction)
+        db.query(Transaction)
         .filter_by(user_id=current_user.id)
         .order_by(Transaction.date.desc())
         .limit(20)
@@ -100,7 +102,7 @@ async def create_transaction(
 
 
     return {
-        "message": "Transaction added successfully",
+        "message": t("transaction_added", lang=user_language(current_user)),
         "transaction": {
             "id": transaction.id,
             "description": transaction.description,
@@ -124,7 +126,7 @@ async def list_transactions(
     """Get user's transactions with optional filtering"""
     start_date = datetime.utcnow() - timedelta(days=days)
 
-    query = db_session.query(Transaction).filter(
+    query = db.query(Transaction).filter(
         Transaction.user_id == current_user.id,
         Transaction.date >= start_date
     )
@@ -134,7 +136,7 @@ async def list_transactions(
     if search:
         query = query.filter(Transaction.description.ilike(f"%{search}%"))
 
-    transactions = query.order_by(Transaction.date.desc()).all()
+    transactions = query.order_by(Transaction.date.desc()).limit(500).all()
 
     return [
         {
@@ -158,24 +160,29 @@ async def get_categories(
     db: Session = Depends(get_db)
 ):
     """Get user's spending by category"""
-    transactions = (
-        db_session.query(Transaction)
-        .filter_by(user_id=current_user.id)
+    category_rows = (
+        db.query(
+            Transaction.category,
+            func.coalesce(func.sum(Transaction.amount), 0),
+            func.count(Transaction.id),
+        )
+        .filter(Transaction.user_id == current_user.id)
+        .group_by(Transaction.category)
         .all()
     )
 
-    categories = {}
-    for t in transactions:
-        cat = t.category or "Uncategorized"
-        if cat not in categories:
-            categories[cat] = {"total": 0, "count": 0}
-        categories[cat]["total"] += t.amount
-        categories[cat]["count"] += 1
-
     return {
         "categories": [
-            {"name": k, "total": round(v["total"], 2), "count": v["count"]}
-            for k, v in sorted(categories.items(), key=lambda x: x[1]["total"], reverse=True)
+            {
+                "name": category or "Uncategorized",
+                "total": round(float(total or 0), 2),
+                "count": count,
+            }
+            for category, total, count in sorted(
+                category_rows,
+                key=lambda row: float(row[1] or 0),
+                reverse=True,
+            )
         ]
     }
 
@@ -191,10 +198,10 @@ async def get_insights(
 
     start_date = datetime.utcnow() - timedelta(days=days)
 
-    insights = db_session.query(Insight).filter(
+    insights = db.query(Insight).filter(
         Insight.user_id == current_user.id,
         Insight.created_at >= start_date
-    ).order_by(Insight.created_at.desc()).all()
+    ).order_by(Insight.created_at.desc()).limit(100).all()
 
     return [
         {
@@ -246,7 +253,7 @@ async def update_transaction(
         description=f"Updated transaction: {transaction.description}",
         metadata={"fields": list(update_data.keys())},
     )
-    return {"message": "Transaction updated", "transaction": {"id": transaction.id, "category": transaction.category}}
+    return {"message": t("transaction_updated", lang=user_language(current_user)), "transaction": {"id": transaction.id, "category": transaction.category}}
 
 
 @router.delete("/{transaction_id}")
@@ -270,7 +277,7 @@ async def delete_transaction(
         entity_id=transaction_id,
         description=f"Deleted transaction: {description}",
     )
-    return {"message": "Transaction deleted"}
+    return {"message": t("transaction_deleted", lang=user_language(current_user))}
 
 
 @router.put("/{transaction_id}/category")
@@ -294,11 +301,11 @@ async def correct_transaction_category(
         "ai_category_correction",
         entity_type="transaction",
         entity_id=transaction.id,
-        description=f"Corrected AI category from {previous or 'Uncategorized'} to {data.category}",
+        description=f"Corrected AI category from {previous or t('uncategorized', lang=user_language(current_user))} to {data.category}",
         metadata={"previous_category": previous, "corrected_category": data.category},
     )
     return {
-        "message": "Category correction saved",
+        "message": t("category_correction_saved", lang=user_language(current_user)),
         "id": transaction.id,
         "category": transaction.category,
         "user_category": transaction.user_category,
@@ -313,7 +320,7 @@ async def mark_insight_read(
 ):
     """Mark an AI insight as read"""
 
-    insight = db_session.query(Insight).filter(
+    insight = db.query(Insight).filter(
         Insight.id == insight_id,
         Insight.user_id == current_user.id
     ).first()
@@ -322,6 +329,6 @@ async def mark_insight_read(
         raise HTTPException(404, "Insight not found")
 
     insight.is_read = True
-    db_session.commit()
+    db.commit()
 
     return {"success": True}

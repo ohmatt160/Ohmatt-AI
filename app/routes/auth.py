@@ -17,8 +17,9 @@ from app.extensions import get_db, db_session
 from app.schemas.user import UserCreate, UserResponse, Token, VerifyRequest, LoginRequest, ProfileUpdate, \
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, TwoFactorVerifyRequest
 from app.services.user_service import UserService
-from app.utils.auth import create_access_token, decode_token_payload, verify_token, get_current_user, confirm_token, \
+from app.utils.auth import create_access_token, decode_token_payload, verify_token, get_current_user, get_request_token, confirm_token, \
     generate_token  # Added confirm_token
+from app.utils.i18n import t, user_language
 from app.models.user import User
 from app.models.blacklist import Blacklist
 from app.models.session import UserSession
@@ -326,13 +327,15 @@ def logout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    token = token or request.cookies.get(settings.AUTH_COOKIE_NAME)
-    blacklisted = Blacklist(jti=token, user_id=current_user.id)
-    db.add(blacklisted)
+    token = get_request_token(request, token)
+    payload = decode_token_payload(token) if token else None
+    token_jti = payload.get("jti") if payload else None
+    if token_jti:
+        db.add(Blacklist(jti=token_jti, user_id=current_user.id))
     revoke_current_session(db, token, current_user.id)
     clear_auth_cookie(response)
     log_activity(request, current_user.id, "logout", entity_type="user", entity_id=current_user.id, description="User logged out")
-    return {"message": "Logged out successfully"}
+    return {"message": t("logged_out", lang=user_language(current_user))}
 
 
 @router.post("/logout-everywhere")
@@ -357,7 +360,7 @@ def logout_everywhere(
         entity_id=current_user.id,
         description="User logged out from all sessions",
     )
-    return {"message": "Logged out from all sessions"}
+    return {"message": t("logged_out_everywhere", lang=user_language(current_user))}
 
 
 @router.post("/refresh", response_model=Token)
@@ -368,7 +371,7 @@ def refresh_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    token = token or request.cookies.get(settings.AUTH_COOKIE_NAME)
+    token = get_request_token(request, token)
     revoke_current_session(db, token, current_user.id)
     access_token = create_access_token(
         data={"sub": current_user.email},
@@ -389,11 +392,11 @@ def verify_account(data: VerifyRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(400, "Invalid or expired token")
     if user.is_verified:
-        return {"message": "Already verified"}
+        return {"message": t("account_already_verified", lang=user_language(user))}
 
     user.is_verified = True
     db_session.commit()
-    return {"message": "Account verified"}
+    return {"message": t("account_verified", lang=user_language(user))}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -416,6 +419,8 @@ def update_profile(
         "transaction_alerts",
         "currency",
         "date_format",
+        "language",
+        "locale",
     }
     preferences = dict(current_user.preferences or {})
 
@@ -455,7 +460,7 @@ def change_password(
     current_user.set_password(data.new_password)
     db.commit()
     log_activity(request, current_user.id, "password_change", entity_type="user", entity_id=current_user.id, description="Password changed")
-    return {"message": "Password changed successfully"}
+    return {"message": t("password_changed", lang=user_language(current_user))}
 
 
 @router.delete("/me")
@@ -484,7 +489,7 @@ def delete_own_account(
     db.query(BankConnection).filter_by(user_id=current_user.id).delete()
     db.delete(current_user)
     db.commit()
-    return {"message": "Account deleted"}
+    return {"message": t("account_deleted", lang=user_language(current_user))}
 
 
 @router.post("/2fa/enable")
@@ -499,7 +504,7 @@ def enable_two_factor(
     current_user.preferences = preferences
     send_plain_email(current_user.email, "Confirm Ohmatt two-factor authentication", f"Your confirmation code is {code}.")
     db.commit()
-    return {"message": "Confirmation code sent"}
+    return {"message": t("confirmation_code_sent", lang=user_language(current_user))}
 
 
 @router.post("/2fa/confirm")
@@ -539,7 +544,7 @@ def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(ge
     """Send password reset email without exposing whether the account exists."""
     email = data.email.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
-    response = {"message": "If the email exists, a reset link has been sent"}
+    response = {"message": t("password_reset_requested")}
 
     if user:
         token = generate_token(user.email, purpose=PASSWORD_RESET_PURPOSE)
@@ -566,4 +571,4 @@ def confirm_password_reset(data: ResetPasswordRequest, db: Session = Depends(get
     validate_password_strength(data.new_password)
     user.set_password(data.new_password)
     db.commit()
-    return {"message": "Password reset successfully"}
+    return {"message": t("password_reset_success", lang=user_language(user))}

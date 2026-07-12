@@ -82,6 +82,8 @@ class UserService:
         ).first()
         if not user or not user.check_password(password):
             return None
+        if (user.preferences or {}).get("is_active", True) is False:
+            return None
         if user.email and user.email.lower() in settings.admin_emails and not user.is_admin:
             user.is_admin = True
             user.is_verified = True

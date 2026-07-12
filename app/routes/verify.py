@@ -5,6 +5,7 @@ from app.extensions import db_session
 from app.models.user import User
 from app.schemas.user import VerifyRequest
 from app.utils.auth import confirm_token
+from app.utils.i18n import t, user_language
 
 router = APIRouter(prefix="/verify", tags=["verify"])
 
@@ -19,8 +20,8 @@ async def verify_account(data: VerifyRequest):
     if not user:
         raise HTTPException(404, "User not found")
     if user.is_verified:
-        return {"message": "Account already verified"}
+        return {"message": t("account_already_verified", lang=user_language(user))}
 
     user.is_verified = True
     db_session.commit()
-    return {"message": "Account verified successfully"}
+    return {"message": t("account_verified", lang=user_language(user))}

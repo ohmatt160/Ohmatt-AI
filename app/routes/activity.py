@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi import Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from datetime import datetime, timedelta
 from app.extensions import get_db, db_session
@@ -52,7 +52,7 @@ async def get_activity_logs(
     """Get activity logs (admin sees all, users see their own)"""
     start_date = datetime.utcnow() - timedelta(days=days)
 
-    query = db.query(ActivityLog).join(User).filter(
+    query = db.query(ActivityLog).options(joinedload(ActivityLog.user)).join(User).filter(
         ActivityLog.created_at >= start_date
     )
 
@@ -84,7 +84,7 @@ async def get_user_activity_history(
 ):
     if not current_user.is_admin and current_user.id != user_id:
         raise HTTPException(403, "Not authorized")
-    query = db.query(ActivityLog).filter(
+    query = db.query(ActivityLog).options(joinedload(ActivityLog.user)).filter(
         ActivityLog.user_id == user_id,
         ActivityLog.created_at >= datetime.utcnow() - timedelta(days=days),
     )
@@ -157,7 +157,7 @@ async def get_feedback(
         db: Session = Depends(get_db)
 ):
     """Get feedback (admin sees all, users see their own)"""
-    query = db.query(ActivityLog).filter(
+    query = db.query(ActivityLog).options(joinedload(ActivityLog.user)).filter(
         ActivityLog.action == "feedback"
     )
 
@@ -231,7 +231,7 @@ async def update_feedback_status(
     if not current_user.is_admin:
         raise HTTPException(403, "Admin access required")
 
-    feedback = db.query(ActivityLog).get(feedback_id)
+    feedback = db.get(ActivityLog, feedback_id)
     if not feedback:
         raise HTTPException(404, "Feedback not found")
 

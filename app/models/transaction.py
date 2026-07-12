@@ -1,10 +1,15 @@
-from sqlalchemy import Column, Integer, Float, DateTime, String, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, Float, DateTime, String, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from app.extensions import Base
 
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    __table_args__ = (
+        Index("ix_transactions_user_date", "user_id", "date"),
+        Index("ix_transactions_user_category_date", "user_id", "category", "date"),
+        Index("ix_transactions_user_account_date", "user_id", "account_id", "date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     amount = Column(Float)

@@ -1,0 +1,18 @@
+{
+  "account_already_verified": "تم التحقق من الحساب بالفعل",
+  "account_verified": "تم التحقق من الحساب بنجاح",
+  "bank_disconnected": "تم فصل البنك بنجاح",
+  "budget_deleted": "تم حذف الميزانية",
+  "category_correction_saved": "تم حفظ تصحيح الفئة",
+  "category_deleted": "تم حذف الفئة",
+  "geography_seeded": "تمت تهيئة البيانات الجغرافية",
+  "message_deleted": "تم حذف الرسالة",
+  "message_edited": "تم تعديل الرسالة",
+  "message_forwarded": "تمت إعادة توجيه الرسالة",
+  "recurring_transaction_created": "تم إنشاء المعاملة المتكررة",
+  "recurring_transaction_deleted": "تم حذف المعاملة المتكررة",
+  "transaction_added": "تمت إضافة المعاملة بنجاح",
+  "transaction_deleted": "تم حذف المعاملة",
+  "transaction_updated": "تم تحديث المعاملة",
+  "uncategorized": "غير مصنف"
+}

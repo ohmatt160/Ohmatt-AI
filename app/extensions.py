@@ -14,10 +14,11 @@ if "sqlite" in settings.DATABASE_URL:
 else:
     engine = create_engine(
         settings.DATABASE_URL,
-        pool_size=20,
-        max_overflow=40,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
         pool_pre_ping=True,
-        pool_recycle=3600,
+        pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
     )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -53,6 +54,7 @@ def init_extensions(app=None):
     try:
         Base.metadata.create_all(bind=engine)
         ensure_runtime_columns()
+        ensure_performance_indexes()
         print("[OK] Database tables created")
         seed_geo_records()
         bootstrap_admin_user()
@@ -61,17 +63,55 @@ def init_extensions(app=None):
 
 
 def ensure_runtime_columns():
-    if "sqlite" not in settings.DATABASE_URL:
-        return
+    with engine.begin() as connection:
+        if "sqlite" in settings.DATABASE_URL:
+            transaction_columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()
+            }
+            if "user_category" not in transaction_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE transactions ADD COLUMN user_category VARCHAR(100)"
+                )
+            task_columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "user_id" not in task_columns:
+                connection.exec_driver_sql("ALTER TABLE tasks ADD COLUMN user_id INTEGER")
+            return
 
-    with engine.connect() as connection:
-        transaction_columns = {
-            row[1]
-            for row in connection.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()
-        }
-        if "user_category" not in transaction_columns:
-            connection.exec_driver_sql("ALTER TABLE transactions ADD COLUMN user_category VARCHAR(100)")
-            connection.commit()
+        connection.exec_driver_sql(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS user_category VARCHAR(100)"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)"
+        )
+
+
+def ensure_performance_indexes():
+    """Create indexes used by authenticated hot paths on existing databases."""
+    statements = [
+        "CREATE INDEX IF NOT EXISTS ix_transactions_user_date ON transactions (user_id, date)",
+        "CREATE INDEX IF NOT EXISTS ix_transactions_user_category_date ON transactions (user_id, category, date)",
+        "CREATE INDEX IF NOT EXISTS ix_transactions_user_account_date ON transactions (user_id, account_id, date)",
+        "CREATE INDEX IF NOT EXISTS ix_messages_receiver_read_time ON messages (receiver_id, is_read, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_messages_sender_time ON messages (sender_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_insights_user_created ON insights (user_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_insights_user_read_created ON insights (user_id, is_read, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_user_created ON activity_logs (user_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_action_created ON activity_logs (action, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_accounts_user_active ON bank_account (user_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_accounts_connection ON bank_account (connection_id)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_connections_user_active ON bank_connections (user_id, is_active)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_transactions_user_date ON bank_transaction (user_id, date)",
+        "CREATE INDEX IF NOT EXISTS ix_bank_transactions_account_date ON bank_transaction (bank_account_id, date)",
+        "CREATE INDEX IF NOT EXISTS ix_user_sessions_user_active_seen ON user_sessions (user_id, is_active, last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS ix_tasks_user_date ON tasks (user_id, date)",
+    ]
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.exec_driver_sql(statement)
 
 
 def seed_geo_records():

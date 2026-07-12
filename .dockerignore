@@ -1,0 +1,23 @@
+.git
+.gitignore
+.idea
+.venv
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite3
+*.log
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Keep the Hugging Face backend image focused on the API.
+templates/
+app/templates/
+old/
+instance/
+migrations/
+node_modules/
+dist/
+build/

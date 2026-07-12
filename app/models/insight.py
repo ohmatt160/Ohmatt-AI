@@ -1,5 +1,5 @@
 # app/models/insight.py
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.extensions import Base
@@ -7,6 +7,10 @@ from app.extensions import Base
 
 class Insight(Base):
     __tablename__ = "insights"
+    __table_args__ = (
+        Index("ix_insights_user_created", "user_id", "created_at"),
+        Index("ix_insights_user_read_created", "user_id", "is_read", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)

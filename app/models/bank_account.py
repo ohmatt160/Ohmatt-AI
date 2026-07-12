@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from app.extensions import Base
 from datetime import datetime
@@ -6,6 +6,10 @@ from datetime import datetime
 
 class BankAccount(Base):
     __tablename__ = "bank_account"
+    __table_args__ = (
+        Index("ix_bank_accounts_user_active", "user_id", "is_active"),
+        Index("ix_bank_accounts_connection", "connection_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)

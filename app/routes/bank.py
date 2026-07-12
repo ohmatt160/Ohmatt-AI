@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -21,40 +22,14 @@ from app.providers.flutterwave_provider import FlutterwaveProvider
 from app.providers.mono_provider import MonoProvider
 from app.providers.paystack_provider import PaystackProvider
 from app.providers.plaid_provider import PlaidProvider
+from app.providers import get_providers_for_country, provider_metadata
 from app.utils.auth import get_current_user
+from app.utils.i18n import t, user_language
 from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/bank", tags=["banking"])
 
 
-
-
-DEFAULT_PROVIDERS = [
-    {
-        "code": "plaid",
-        "name": "Plaid",
-        "api_name": "plaid",
-        "features": ["transactions", "balances", "auth"],
-    },
-    {
-        "code": "paystack",
-        "name": "Paystack",
-        "api_name": "paystack",
-        "features": ["transactions", "verification"],
-    },
-    {
-        "code": "mono",
-        "name": "Mono",
-        "api_name": "mono",
-        "features": ["account_linking", "transactions", "identity"],
-    },
-    {
-        "code": "flutterwave",
-        "name": "Flutterwave",
-        "api_name": "flutterwave",
-        "features": ["transactions", "verification"],
-    },
-]
 
 
 def get_user_country(current_user: User):
@@ -64,11 +39,12 @@ def get_user_country(current_user: User):
 
 
 def provider_payload(code: str, name: Optional[str] = None, features: Optional[List[str]] = None):
-    normalized_code = code.lower()
+    metadata = provider_metadata(code)
+    normalized_code = metadata["code"]
     return {
         "code": normalized_code,
-        "name": name or normalized_code.replace("_", " ").title(),
-        "features": features or ["transactions", "balances"],
+        "name": name or metadata["name"],
+        "features": features or metadata["features"],
     }
 
 
@@ -91,8 +67,9 @@ def get_or_create_provider(code: str, name: str, country_code: Optional[str] = N
     return provider
 
 
-def get_provider_instance(provider: BankProvider):
+def get_provider_instance(provider: BankProvider, default_currency: str = "USD"):
     config = provider.api_config or {}
+    config = {**config, "default_currency": default_currency}
     api_name = provider.api_name.lower()
 
     if api_name == "plaid":
@@ -109,6 +86,7 @@ def get_provider_instance(provider: BankProvider):
             **config,
             "name": provider.name,
             "api_name": provider.api_name,
+            "enabled": settings.FLUTTERWAVE_ENABLED,
             "secret_key": config.get("secret_key") or settings.FLUTTERWAVE_SECRET_KEY,
             "public_key": config.get("public_key") or settings.FLUTTERWAVE_PUBLIC_KEY,
             "encryption_key": config.get("encryption_key") or settings.FLUTTERWAVE_ENCRYPTION_KEY,
@@ -134,6 +112,20 @@ def get_provider_instance(provider: BankProvider):
         })
 
     raise HTTPException(400, f"Unsupported banking provider '{api_name}'")
+
+
+def user_country_code(current_user: User) -> str:
+    country = get_user_country(current_user)
+    return country.code if country and country.code else "US"
+
+
+def user_default_currency(current_user: User) -> str:
+    country = get_user_country(current_user)
+    return (
+        country.currency
+        if country and country.currency
+        else (current_user.preferences or {}).get("currency", "USD")
+    )
 
 
 def account_balance(account_data: dict, key: str, default: float = 0.0):
@@ -244,7 +236,10 @@ def serialize_account(account: BankAccount):
 
 
 def verification_account_id(provider_name: str, account_bank: str, account_number: str):
-    return f"{provider_name}-{account_bank}-{account_number[-4:]}"
+    fingerprint = hashlib.sha256(
+        f"{provider_name}:{account_bank}:{account_number}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"{provider_name}-{fingerprint}"
 
 
 @router.get("/providers")
@@ -253,44 +248,35 @@ async def get_providers(
     db: Session = Depends(get_db)
 ):
     """Get available banking providers for user's country"""
+    country = get_user_country(current_user)
+    country_code = country.code if country else None
+    allowed_provider_codes = set(get_providers_for_country(country_code))
     configured_providers = db_session.query(BankProvider).filter_by(is_active=True).all()
     if configured_providers:
+        filtered_providers = [
+            provider for provider in configured_providers
+            if provider.api_name.lower() in allowed_provider_codes
+        ] or configured_providers
         return {
             "country": (
                 {"code": country.code, "name": country.name, "currency": country.currency}
-                if (country := get_user_country(current_user))
+                if country
                 else None
             ),
             "providers": [
                 provider_payload(provider.api_name, provider.name, None)
-                for provider in configured_providers
+                for provider in filtered_providers
             ],
         }
 
-    country = get_user_country(current_user)
-
-    if not country:
-        return {
-            "country": None,
-            "providers": [
-                provider_payload(p["code"], p["name"], p["features"])
-                for p in DEFAULT_PROVIDERS
-            ],
-        }
-
-    providers = []
-    if country.plaid_supported:
-        providers.append(provider_payload("plaid", "Plaid", ["transactions", "balances", "auth"]))
-    if country.other_provider:
-        providers.append(provider_payload(country.other_provider, country.other_provider.title(), ["transactions", "verification"]))
-    if not providers:
-        providers = [
-            provider_payload(p["code"], p["name"], p["features"])
-            for p in DEFAULT_PROVIDERS
-        ]
+    providers = [provider_payload(code) for code in get_providers_for_country(country_code)]
 
     return {
-        "country": {"code": country.code, "name": country.name, "currency": country.currency},
+        "country": (
+            {"code": country.code, "name": country.name, "currency": country.currency}
+            if country
+            else None
+        ),
         "providers": providers,
     }
 
@@ -308,6 +294,21 @@ async def get_accounts(
     )
 
     return [serialize_account(a) for a in accounts]
+
+
+@router.get("/flutterwave/banks")
+async def get_flutterwave_banks(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return Flutterwave's cached bank directory for the user's country."""
+    country_code = user_country_code(current_user)
+    provider = get_or_create_provider("flutterwave", "Flutterwave", country_code)
+    try:
+        banks = get_provider_instance(provider).list_banks(country_code)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"country": country_code, "banks": banks}
 
 
 @router.get("/connections")
@@ -332,12 +333,12 @@ async def connect_bank(
     db: Session = Depends(get_db)
 ):
     """Start a live bank connection. OAuth providers return link/auth data."""
-    country = get_user_country(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country.code if country else None)
-    provider_client = get_provider_instance(provider)
+    country_code = user_country_code(current_user)
+    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(current_user))
     link_data = provider_client.create_link_token(
         str(current_user.id),
-        country.code if country else "US",
+        country_code,
     )
 
     if link_data.get("error"):
@@ -368,9 +369,9 @@ async def exchange_bank_token(
     db: Session = Depends(get_db)
 ):
     """Finish a live bank connection and sync accounts from the provider."""
-    country = get_user_country(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country.code if country else None)
-    provider_client = get_provider_instance(provider)
+    country_code = user_country_code(current_user)
+    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(current_user))
     token_data = provider_client.exchange_token(data.public_token, data.metadata)
 
     if token_data.get("error") or token_data.get("success") is False:
@@ -435,16 +436,31 @@ async def verify_bank_account(
 ):
     """Verify a bank account with providers that use account resolution."""
     country = get_user_country(current_user)
-    provider = get_or_create_provider(data.bank_code, data.bank_name, country.code if country else None)
-    provider_client = get_provider_instance(provider)
+    country_code = country.code if country and country.code else user_country_code(current_user)
+    provider = get_or_create_provider(data.bank_code, data.bank_name, country_code)
+    provider_client = get_provider_instance(provider, user_default_currency(current_user))
 
     if not hasattr(provider_client, "verify_bank_account"):
         raise HTTPException(400, f"{provider.name} does not support account verification")
 
+    institution_name = data.bank_name
+    if provider.api_name.lower() == "flutterwave":
+        try:
+            supported_banks = provider_client.list_banks(country_code)
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        selected_bank = next(
+            (bank for bank in supported_banks if bank["code"] == data.account_bank),
+            None,
+        )
+        if not selected_bank:
+            raise HTTPException(400, "Select a supported bank")
+        institution_name = selected_bank["name"]
+
     verification = provider_client.verify_bank_account(
         data.account_number,
         data.account_bank,
-        country.code if country else "NG",
+        country_code,
     )
 
     if verification.get("error") or verification.get("success") is False:
@@ -452,11 +468,20 @@ async def verify_bank_account(
 
     account_number = str(verification.get("account_number") or data.account_number)
     account_name = verification.get("account_name") or "Verified bank account"
-    currency = country.currency if country and country.currency else "NGN"
+    currency = (
+        country.currency
+        if country and country.currency
+        else (current_user.preferences or {}).get("currency", "USD")
+    )
 
     connection = (
         db_session.query(BankConnection)
-        .filter_by(user_id=current_user.id, provider_id=provider.id, is_active=True)
+        .filter_by(
+            user_id=current_user.id,
+            provider_id=provider.id,
+            institution_id=data.account_bank,
+            is_active=True,
+        )
         .first()
     )
     if not connection:
@@ -469,7 +494,7 @@ async def verify_bank_account(
         db_session.add(connection)
 
     connection.institution_id = data.account_bank
-    connection.institution_name = data.bank_name
+    connection.institution_name = institution_name
     connection.last_sync = datetime.utcnow()
     db_session.commit()
     db_session.refresh(connection)
@@ -489,7 +514,7 @@ async def verify_bank_account(
         db_session.add(account)
 
     account.connection_id = connection.id
-    account.institution_name = data.bank_name
+    account.institution_name = institution_name
     account.account_name = account_name
     account.official_name = account_name
     account.name = account_name
@@ -509,7 +534,7 @@ async def verify_bank_account(
         "bank_connection_complete",
         entity_type="bank_connection",
         entity_id=connection.id,
-        description=f"Verified and connected {data.bank_name}",
+        description=f"Verified and connected {institution_name}",
         metadata={"provider": provider.api_name},
     )
 
@@ -540,7 +565,7 @@ async def disconnect_bank(
         entity_id=connection.id,
         description=f"Disconnected {connection.institution_name}",
     )
-    return {"message": "Bank disconnected successfully"}
+    return {"message": t("bank_disconnected", lang=user_language(current_user))}
 
 
 @router.post("/connections/{connection_id}/sync")
@@ -563,7 +588,7 @@ async def sync_connection(
         db_session.refresh(connection)
         return serialize_connection(connection)
 
-    provider_client = get_provider_instance(connection.provider)
+    provider_client = get_provider_instance(connection.provider, user_default_currency(current_user))
     accounts_data = provider_client.get_accounts(connection.access_token)
     upsert_provider_accounts(current_user, connection, accounts_data)
     connection.last_sync = datetime.utcnow()

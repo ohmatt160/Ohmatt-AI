@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, Boolean, String
+from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, Boolean, String, Index
 from sqlalchemy.orm import relationship
 from app.extensions import Base
 from datetime import datetime
@@ -14,6 +14,10 @@ class MessageStatus(str, enum.Enum):
 
 class Messages(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_receiver_read_time", "receiver_id", "is_read", "timestamp"),
+        Index("ix_messages_sender_time", "sender_id", "timestamp"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     sender_id = Column(Integer, ForeignKey('users.id'), nullable=False)

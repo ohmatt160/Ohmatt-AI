@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from app.extensions import Base
 from datetime import datetime
@@ -6,6 +6,10 @@ from datetime import datetime
 
 class BankTransaction(Base):
     __tablename__ = "bank_transaction"
+    __table_args__ = (
+        Index("ix_bank_transactions_user_date", "user_id", "date"),
+        Index("ix_bank_transactions_account_date", "bank_account_id", "date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)

@@ -41,6 +41,7 @@ RATE_LIMIT_RULES = [
     RateLimitRule("POST", "/api/v1/auth/verify", 5, 60),
     RateLimitRule("POST", "/api/v1/auth/password-reset/request", 3, 60),
     RateLimitRule("POST", "/api/v1/auth/password-reset/confirm", 5, 60),
+    RateLimitRule("POST", "/api/v1/bank/verify-account", 10, 60),
 ]
 
 

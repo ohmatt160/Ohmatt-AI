@@ -1,5 +1,5 @@
 # app/models/activity_log.py
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.extensions import Base
@@ -7,6 +7,10 @@ from app.extensions import Base
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
+    __table_args__ = (
+        Index("ix_activity_logs_user_created", "user_id", "created_at"),
+        Index("ix_activity_logs_action_created", "action", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)

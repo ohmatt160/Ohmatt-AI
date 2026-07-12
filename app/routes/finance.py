@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.extensions import get_db
 from app.models.bank_account import BankAccount
+from app.models.bank_connection import BankConnection
 from app.models.finance import Budget, RecurringTransaction, TransactionCategory, TransactionReceipt
 from app.models.insight import Insight
 from app.models.messages import Messages
@@ -26,6 +27,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.bank import CategoryPayload, BudgetPayload, RecurringPayload, OnboardingPayload, PushPayload
 from app.utils.auth import get_current_user
+from app.utils.i18n import t as translate, user_language
 
 router = APIRouter(tags=["finance"])
 
@@ -61,6 +63,44 @@ def serialize_transaction(t: Transaction) -> dict:
         "currency": t.currency or "USD",
         "pending": bool(t.pending),
         "merchant_name": t.merchant_name,
+    }
+
+
+def serialize_dashboard_account(account: BankAccount) -> dict:
+    return {
+        "id": account.id,
+        "institution_name": account.institution_name,
+        "account_name": account.account_name,
+        "account_type": account.account_type,
+        "balance_available": account.balance_available,
+        "balance_current": account.balance_current,
+        "currency": account.currency or "USD",
+        "is_active": bool(account.is_active),
+    }
+
+
+def serialize_dashboard_connection(connection: BankConnection) -> dict:
+    return {
+        "id": connection.id,
+        "provider_id": connection.provider_id,
+        "institution_name": connection.institution_name,
+        "is_active": bool(connection.is_active),
+        "last_sync": connection.last_sync.isoformat() if connection.last_sync else None,
+        "created_at": connection.created_at.isoformat() if connection.created_at else None,
+    }
+
+
+def serialize_insight(insight: Insight) -> dict:
+    return {
+        "id": insight.id,
+        "type": insight.type,
+        "title": insight.title,
+        "description": insight.description,
+        "category": insight.category,
+        "amount": insight.amount,
+        "severity": insight.severity,
+        "is_read": bool(insight.is_read),
+        "created_at": insight.created_at.isoformat() if insight.created_at else None,
     }
 
 
@@ -203,7 +243,7 @@ def export_transactions_pdf(
     for t in transactions:
         lines.append(
             f"{t.date.date() if t.date else ''} | {t.description or ''} | "
-            f"{t.category or 'Uncategorized'} | {t.currency or 'USD'} {t.amount:.2f}"
+            f"{t.category or translate('uncategorized', lang=user_language(current_user))} | {t.currency or 'USD'} {t.amount:.2f}"
         )
 
     return Response(
@@ -257,7 +297,7 @@ def delete_custom_category(category_id: int, current_user: User = Depends(get_cu
     db.query(Transaction).filter_by(user_id=current_user.id, category=category.name).update({"category": "Uncategorized"})
     db.delete(category)
     db.commit()
-    return {"message": "Category deleted"}
+    return {"message": translate("category_deleted", lang=user_language(current_user))}
 
 
 @router.post("/transactions/{transaction_id}/receipt")
@@ -340,7 +380,7 @@ def delete_budget(budget_id: int, current_user: User = Depends(get_current_user)
         raise HTTPException(404, "Budget not found")
     db.delete(budget)
     db.commit()
-    return {"message": "Budget deleted"}
+    return {"message": translate("budget_deleted", lang=user_language(current_user))}
 
 
 @router.get("/recurring-transactions")
@@ -370,7 +410,7 @@ def create_recurring(payload: RecurringPayload, current_user: User = Depends(get
     db.add(item)
     db.commit()
     db.refresh(item)
-    return {"id": item.id, "message": "Recurring transaction created"}
+    return {"id": item.id, "message": translate("recurring_transaction_created", lang=user_language(current_user))}
 
 
 @router.delete("/recurring-transactions/{item_id}")
@@ -380,7 +420,7 @@ def delete_recurring(item_id: int, current_user: User = Depends(get_current_user
         raise HTTPException(404, "Recurring transaction not found")
     db.delete(item)
     db.commit()
-    return {"message": "Recurring transaction deleted"}
+    return {"message": translate("recurring_transaction_deleted", lang=user_language(current_user))}
 
 
 @router.get("/dashboard/metrics")
@@ -409,6 +449,163 @@ def dashboard_metrics(current_user: User = Depends(get_current_user), db: Sessio
         "weekly": [{"period": k, **v} for k, v in sorted(weekly.items())],
         "this_month": monthly[start_this_month.strftime("%Y-%m")],
         "last_month": monthly[start_last_month.strftime("%Y-%m")],
+    }
+
+
+@router.get("/dashboard/overview")
+def dashboard_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the dashboard's initial state without repeated database scans."""
+    now = datetime.utcnow()
+    start_30_days = now - timedelta(days=30)
+    start_this_month = datetime(now.year, now.month, 1)
+    start_last_month = (
+        datetime(now.year - 1, 12, 1)
+        if now.month == 1
+        else datetime(now.year, now.month - 1, 1)
+    )
+
+    accounts = (
+        db.query(BankAccount)
+        .filter(BankAccount.user_id == current_user.id, BankAccount.is_active == True)
+        .all()
+    )
+    connections = (
+        db.query(BankConnection)
+        .filter(BankConnection.user_id == current_user.id, BankConnection.is_active == True)
+        .all()
+    )
+    recent_transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id, Transaction.date >= start_30_days)
+        .order_by(Transaction.date.desc())
+        .limit(100)
+        .all()
+    )
+    category_rows = (
+        db.query(
+            Transaction.category,
+            func.coalesce(func.sum(Transaction.amount), 0),
+            func.count(Transaction.id),
+        )
+        .filter(Transaction.user_id == current_user.id)
+        .group_by(Transaction.category)
+        .order_by(func.sum(Transaction.amount).desc())
+        .all()
+    )
+    insights = (
+        db.query(Insight)
+        .filter(Insight.user_id == current_user.id, Insight.created_at >= start_30_days)
+        .order_by(Insight.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    budgets = (
+        db.query(Budget)
+        .filter(
+            Budget.user_id == current_user.id,
+            Budget.month == start_this_month.strftime("%Y-%m"),
+        )
+        .all()
+    )
+    budget_spending_rows = (
+        db.query(Transaction.category, func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.user_id == current_user.id,
+            Transaction.date >= start_this_month,
+            Transaction.date < (
+                datetime(now.year + 1, 1, 1)
+                if now.month == 12
+                else datetime(now.year, now.month + 1, 1)
+            ),
+            Transaction.amount > 0,
+        )
+        .group_by(Transaction.category)
+        .all()
+    )
+    metric_transactions = (
+        db.query(Transaction.date, Transaction.amount)
+        .filter(
+            Transaction.user_id == current_user.id,
+            Transaction.date >= start_last_month,
+        )
+        .all()
+    )
+
+    monthly = defaultdict(lambda: {"income": 0.0, "expense": 0.0})
+    weekly = defaultdict(lambda: {"income": 0.0, "expense": 0.0})
+    for transaction_date, raw_amount in metric_transactions:
+        transaction_date = transaction_date or now
+        amount = float(raw_amount or 0)
+        bucket = "income" if amount < 0 else "expense"
+        monthly[transaction_date.strftime("%Y-%m")][bucket] += abs(amount)
+        weekly[transaction_date.strftime("%Y-W%U")][bucket] += abs(amount)
+
+    total_balance = sum(
+        float(account.balance_current or account.balance_available or 0)
+        for account in accounts
+    )
+    actuals = {
+        category or "Uncategorized": float(total or 0)
+        for category, total in budget_spending_rows
+    }
+    preferences = current_user.preferences or {}
+
+    return {
+        "accounts": [serialize_dashboard_account(account) for account in accounts],
+        "transactions": [serialize_transaction(transaction) for transaction in recent_transactions],
+        "categories": {
+            "categories": [
+                {
+                    "name": category or "Uncategorized",
+                    "total": round(float(total or 0), 2),
+                    "count": count,
+                }
+                for category, total, count in category_rows
+            ]
+        },
+        "insights": [serialize_insight(insight) for insight in insights],
+        "connections": [
+            serialize_dashboard_connection(connection) for connection in connections
+        ],
+        "profile": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "preferences": preferences,
+            "currency": preferences.get("currency"),
+            "language": preferences.get("language"),
+            "locale": preferences.get("locale"),
+        },
+        "metrics": {
+            "total_balance": round(total_balance, 2),
+            "net_worth": round(total_balance, 2),
+            "monthly": [{"period": key, **value} for key, value in sorted(monthly.items())],
+            "weekly": [{"period": key, **value} for key, value in sorted(weekly.items())],
+            "this_month": monthly[start_this_month.strftime("%Y-%m")],
+            "last_month": monthly[start_last_month.strftime("%Y-%m")],
+        },
+        "budgets": [
+            {
+                "id": budget.id,
+                "category": budget.category,
+                "month": budget.month,
+                "amount": budget.amount,
+                "actual": round(actuals.get(budget.category, 0), 2),
+                "remaining": round(budget.amount - actuals.get(budget.category, 0), 2),
+                "percent_used": (
+                    round((actuals.get(budget.category, 0) / budget.amount) * 100, 1)
+                    if budget.amount
+                    else 0
+                ),
+                "alert": actuals.get(budget.category, 0)
+                >= budget.amount * budget.alert_threshold,
+                "alert_threshold": budget.alert_threshold,
+            }
+            for budget in budgets
+        ],
     }
 
 

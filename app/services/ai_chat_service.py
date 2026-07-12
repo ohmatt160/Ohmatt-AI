@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.transaction import Transaction
 from app.models.user import User
+from app.utils.currency import format_currency
+from app.utils.i18n import user_currency, user_language
 
 # Nvidia NIM uses OpenAI-compatible API
 client = OpenAI(
@@ -18,16 +20,15 @@ client = OpenAI(
 class AIChatService:
     def __init__(self):
         self.model = "meta/llama-3.3-70b-instruct"
-        self.symbol_map = {"USD": "$", "NGN": "₦", "GBP": "£", "EUR": "€", "GHS": "₵", "KES": "KSh"}
 
-    def _get_symbol(self, user: User) -> str:
-        currency = (user.preferences or {}).get("currency", "USD")
-        return self.symbol_map.get(currency, "$")
+    def _format_money(self, amount: float, user: User) -> str:
+        return format_currency(amount, user_currency(user))
 
     def respond(self, db: Session, user: User, message: str) -> str:
         transactions = self._get_recent_transactions(db, user)
         spending_summary = self._summarize_spending(transactions, user)
-        symbol = self._get_symbol(user)
+        currency = user_currency(user)
+        language = user_language(user)
 
         system_prompt = f"""You are Ohmatt, a smart, witty, and emotionally intelligent AI companion. 
 
@@ -35,7 +36,7 @@ class AIChatService:
         - You're a close friend who happens to be great with money
         - Talk about ANYTHING - life, love, career, philosophy, random thoughts
         - Naturally weave in financial wisdom when relevant (don't force it)
-        - Use Nigerian Pidgin occasionally if the user does
+        - Match the user's preferred language ({language}) and informal tone when it is clear
         - Be funny, sarcastic when appropriate, but always supportive
         - Remember: you're talking to a real person with real feelings
 
@@ -48,10 +49,10 @@ class AIChatService:
 
         Financial mode (only when relevant):
         - You have access to their spending data
-        - Celebrate their wins ("You saved {symbol}50k this month? Omo, you're doing well!")
-        - Call out bad habits with humor ("Bro, you spent {symbol}30k on shawarma? Are you training for an eating competition?")
+        - Celebrate wins using the user's stored currency ({currency})
+        - Call out bad habits with humor while respecting local context
         - Give advice that feels like it's from a smart friend, not a textbook
-        - Use {symbol} for all money amounts
+        - Use {currency} formatting for all money amounts
 
         Keep responses 2-4 sentences unless the user clearly wants more detail.
         Use emojis if needed. Don't be a robot."""
@@ -91,7 +92,6 @@ class AIChatService:
         if not transactions:
             return "No transactions in the last 30 days."
 
-        symbol = self._get_symbol(user)
         total = sum(t.amount for t in transactions)
 
         categories = {}
@@ -99,10 +99,10 @@ class AIChatService:
             cat = t.category or "Uncategorized"
             categories[cat] = categories.get(cat, 0) + t.amount
 
-        summary = f"Total spent (30 days): {symbol}{total:,.2f}\n"
+        summary = f"Total spent (30 days): {self._format_money(total, user)}\n"
         for cat, amt in sorted(categories.items(), key=lambda x: x[1], reverse=True):
-            pct = (amt / total) * 100
-            summary += f"- {cat}: {symbol}{amt:,.2f} ({pct:.0f}%)\n"
+            pct = (amt / total) * 100 if total else 0
+            summary += f"- {cat}: {self._format_money(amt, user)} ({pct:.0f}%)\n"
 
         return summary
 

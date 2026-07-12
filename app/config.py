@@ -20,17 +20,21 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = Field(default="your-secret-key", env="SECRET_KEY")
     JWT_SECRET_KEY: str = Field(default="your-jwt-secret", env="JWT_SECRET_KEY")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60 * 24 * 7, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     SESSION_IDLE_TIMEOUT_MINUTES: int = Field(default=30, env="SESSION_IDLE_TIMEOUT_MINUTES")
     AUTH_COOKIE_NAME: str = Field(default="ohmatt_access_token", env="AUTH_COOKIE_NAME")
     AUTH_COOKIE_SECURE: bool = Field(default=True, env="AUTH_COOKIE_SECURE")
-    AUTH_COOKIE_SAMESITE: str = Field(default="none", env="AUTH_COOKIE_SAMESITE")
+    AUTH_COOKIE_SAMESITE: str = Field(default="lax", env="AUTH_COOKIE_SAMESITE")
     ADMIN_EMAILS: str = Field(default="", env="ADMIN_EMAILS")
     BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_EMAIL")
     BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PASSWORD")
     
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./test.db", env="DATABASE_URL")
+    DB_POOL_SIZE: int = Field(default=5, env="DB_POOL_SIZE")
+    DB_MAX_OVERFLOW: int = Field(default=10, env="DB_MAX_OVERFLOW")
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=30, env="DB_POOL_TIMEOUT_SECONDS")
+    DB_POOL_RECYCLE_SECONDS: int = Field(default=1800, env="DB_POOL_RECYCLE_SECONDS")
     
     # Email settings
     SENDGRID_API_KEY: str = Field(default="", env="SENDGRID_API_KEY")
@@ -67,14 +71,14 @@ class Settings(BaseSettings):
     FLUTTERWAVE_BASE_URL: str = Field(default="https://api.flutterwave.com/v3", env="FLUTTERWAVE_BASE_URL")
     FLUTTERWAVE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="FLUTTERWAVE_WEBHOOK_SECRET")
     
-    # Paystack Configuration (Nigeria/Ghana)
+    # Paystack Configuration
     PAYSTACK_ENABLED: bool = Field(default=False, env="PAYSTACK_ENABLED")
     PAYSTACK_SECRET_KEY: Optional[str] = Field(default=None, env="PAYSTACK_SECRET_KEY")
     PAYSTACK_PUBLIC_KEY: Optional[str] = Field(default=None, env="PAYSTACK_PUBLIC_KEY")
     PAYSTACK_BASE_URL: str = Field(default="https://api.paystack.co", env="PAYSTACK_BASE_URL")
     PAYSTACK_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="PAYSTACK_WEBHOOK_SECRET")
     
-    # Mono Configuration (Nigeria)
+    # Mono Configuration
     MONO_ENABLED: bool = Field(default=False, env="MONO_ENABLED")
     MONO_SECRET_KEY: Optional[str] = Field(default=None, env="MONO_SECRET_KEY")
     MONO_PUBLIC_KEY: Optional[str] = Field(default=None, env="MONO_PUBLIC_KEY")
@@ -139,6 +143,8 @@ class Settings(BaseSettings):
                 raise ValueError("BOOTSTRAP_ADMIN_PASSWORD is required when BOOTSTRAP_ADMIN_EMAIL is set")
             if self.AUTH_COOKIE_SAMESITE.lower() == "none" and not self.AUTH_COOKIE_SECURE:
                 raise ValueError("AUTH_COOKIE_SECURE must be true when AUTH_COOKIE_SAMESITE=none")
+            if self.DB_POOL_SIZE < 1 or self.DB_MAX_OVERFLOW < 0:
+                raise ValueError("Database pool settings are invalid")
         return self
     
     class Config:

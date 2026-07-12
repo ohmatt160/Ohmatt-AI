@@ -6,11 +6,6 @@ from app.routes.transactions import router as transactions_router
 from app.routes.messages import router as messages_router
 from app.routes.bank import router as bank_router
 from app.routes.admin import router as admin_router
-from app.routes.messages import router as messages_router
-from app.routes.tasks import router as tasks_router
-from app.routes.geo import router as geo_router
-from app.routes.transactions import router as transactions_router
-from app.routes.auth import router as auth_router
 from app.routes.webhooks import router as webhooks_router
 from app.routes.users import router as users_router
 from app.routes.finance import router as finance_router
