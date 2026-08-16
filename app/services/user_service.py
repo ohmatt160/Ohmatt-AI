@@ -13,7 +13,7 @@ from app.config import settings
 
 class UserService:
     @staticmethod
-    def create_user(db: Session, user_data: UserCreate) -> User:
+    def create_user(db: Session, user_data: UserCreate, *, commit: bool = True) -> User:
         email = user_data.email.strip().lower()
         existing = db.query(User).filter(func.lower(User.email) == email).first()
         if existing:
@@ -61,8 +61,11 @@ class UserService:
         user.set_password(user_data.password)
         try:
             db.add(user)
-            db.commit()
-            db.refresh(user)
+            if commit:
+                db.commit()
+                db.refresh(user)
+            else:
+                db.flush()
         except IntegrityError:
             db.rollback()
             raise HTTPException(

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from app.routes import api_router
 from app.config import settings
 from app.extensions import init_extensions, engine, Base
 from app.middleware.security import SecurityMiddleware
+from app.services.integration_outbox_service import run_outbox_worker
 
 
 # Static paths (if you have a frontend)
@@ -20,8 +22,17 @@ ASSETS_DIR = os.path.join(STATIC_DIR, "assets")
 async def lifespan(app: FastAPI):
     print(f"[OK] Starting {settings.PROJECT_NAME}...")
     init_extensions(app)
-    yield
-    print("[INFO] Shutting down...")
+    outbox_stop = asyncio.Event()
+    outbox_task = None
+    if settings.OHMATTOS_ENABLED:
+        outbox_task = asyncio.create_task(run_outbox_worker(outbox_stop))
+    try:
+        yield
+    finally:
+        outbox_stop.set()
+        if outbox_task:
+            await outbox_task
+        print("[INFO] Shutting down...")
 
 def create_app() -> FastAPI:
     app = FastAPI(

@@ -42,6 +42,19 @@ class Settings(BaseSettings):
     SENDGRID_FROM_NAME: str = Field(default="Ohmatt", env="SENDGRID_FROM_NAME")
     SENDGRID_API_URL: str = Field(default="https://api.sendgrid.com/v3/mail/send", env="SENDGRID_API_URL")
 
+    # Server-to-server sibling integration. These values must never be exposed
+    # through Vite, Flutter, public runtime configuration, or API responses.
+    OHMATTOS_ENABLED: bool = Field(default=False, env="OHMATTOS_ENABLED")
+    OHMATTOS_BASE_URL: str = Field(default="", env="OHMATTOS_BASE_URL")
+    OHMATTOS_APP_ID: str = Field(default="", env="OHMATTOS_APP_ID")
+    OHMATTOS_API_KEY: str = Field(default="", env="OHMATTOS_API_KEY")
+    OHMATTOS_CONNECT_TIMEOUT_SECONDS: float = Field(default=3.0, env="OHMATTOS_CONNECT_TIMEOUT_SECONDS")
+    OHMATTOS_READ_TIMEOUT_SECONDS: float = Field(default=10.0, env="OHMATTOS_READ_TIMEOUT_SECONDS")
+    OHMATTOS_OUTBOX_POLL_SECONDS: float = Field(default=5.0, env="OHMATTOS_OUTBOX_POLL_SECONDS")
+    OHMATTOS_OUTBOX_BATCH_SIZE: int = Field(default=20, env="OHMATTOS_OUTBOX_BATCH_SIZE")
+    OHMATTOS_CANARY_EMAILS: str = Field(default="", env="OHMATTOS_CANARY_EMAILS")
+    OHMATTOS_ROLLOUT_PERCENT: int = Field(default=0, env="OHMATTOS_ROLLOUT_PERCENT")
+
     # Legacy SMTP settings are kept for local fallback only.
     MAIL_SERVER: str = Field(default="sandbox.smtp.mailtrap.io", env="MAIL_SERVER")
     MAIL_PORT: int = Field(default=2525, env="MAIL_PORT")
@@ -120,6 +133,14 @@ class Settings(BaseSettings):
         return emails
 
     @property
+    def ohmattos_canary_emails(self) -> set[str]:
+        return {
+            email.strip().lower()
+            for email in self.OHMATTOS_CANARY_EMAILS.split(",")
+            if email.strip()
+        }
+
+    @property
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"
 
@@ -147,6 +168,17 @@ class Settings(BaseSettings):
                 raise ValueError("AUTH_COOKIE_SECURE must be true when AUTH_COOKIE_SAMESITE=none")
             if self.DB_POOL_SIZE < 1 or self.DB_MAX_OVERFLOW < 0:
                 raise ValueError("Database pool settings are invalid")
+            if self.OHMATTOS_ENABLED:
+                if not self.OHMATTOS_BASE_URL.startswith("https://"):
+                    raise ValueError("OHMATTOS_BASE_URL must use HTTPS in production")
+                if not self.OHMATTOS_APP_ID.strip():
+                    raise ValueError("OHMATTOS_APP_ID is required when OhmattOS is enabled")
+                if len(self.OHMATTOS_API_KEY.strip()) < 32:
+                    raise ValueError("OHMATTOS_API_KEY must be a strong service key")
+                if self.OHMATTOS_OUTBOX_BATCH_SIZE < 1:
+                    raise ValueError("OHMATTOS_OUTBOX_BATCH_SIZE must be positive")
+                if not 0 <= self.OHMATTOS_ROLLOUT_PERCENT <= 100:
+                    raise ValueError("OHMATTOS_ROLLOUT_PERCENT must be between 0 and 100")
         return self
     
     class Config:

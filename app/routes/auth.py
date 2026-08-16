@@ -1,6 +1,7 @@
 import smtplib
 import random
 import time
+import hashlib
 from email.mime.text import MIMEText
 from urllib.parse import urlencode
 import requests
@@ -17,6 +18,7 @@ from app.extensions import get_db
 from app.schemas.user import UserCreate, UserResponse, Token, VerifyRequest, LoginRequest, ProfileUpdate, \
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, TwoFactorVerifyRequest
 from app.services.user_service import UserService
+from app.services.integration_outbox_service import enqueue_notification, should_route_to_ohmattos
 from app.utils.auth import create_access_token, decode_token_payload, verify_token, get_current_user, get_request_token, confirm_token, \
     generate_token  # Added confirm_token
 from app.utils.i18n import t, user_language
@@ -131,22 +133,6 @@ def build_password_reset_url(token: str) -> str:
     return f"{base_url}/reset-password?{urlencode({'token': token})}"
 
 
-def send_password_reset_email(email: str, reset_url: str) -> bool:
-    return send_plain_email(
-        email,
-        "Reset your Ohmatt password",
-        "\n".join(
-            [
-                "You requested a password reset for your Ohmatt account.",
-                "",
-                f"Reset your password here: {reset_url}",
-                "",
-                "This link expires in 24 hours. If you did not request this, you can ignore this email.",
-            ]
-        ),
-    )
-
-
 def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
     if not settings.SENDGRID_API_KEY or not settings.SENDGRID_FROM_EMAIL:
         return False
@@ -216,6 +202,28 @@ def send_plain_email(email: str, subject: str, body: str) -> bool:
     return False
 
 
+def deliver_auth_email(
+    db: Session,
+    user: User,
+    *,
+    purpose: str,
+    subject: str,
+    body: str,
+    idempotency_key: str,
+) -> bool:
+    if should_route_to_ohmattos(user_id=user.id, email=user.email):
+        enqueue_notification(
+            db,
+            user_id=user.id,
+            purpose=purpose,
+            channel_type="email",
+            content={"to": user.email, "subject": subject, "body": body},
+            idempotency_key=idempotency_key,
+        )
+        return True
+    return send_plain_email(user.email, subject, body)
+
+
 def issue_2fa_code(user: User) -> str:
     code = f"{random.randint(0, 999999):06d}"
     preferences = dict(user.preferences or {})
@@ -244,15 +252,31 @@ def register_user(
     db: Session = Depends(get_db),
 ):
     validate_password_strength(user.password)
-    created_user = UserService.create_user(db, user)
+    created_user = UserService.create_user(db, user, commit=False)
     token = generate_token(created_user.email)
     verify_url = f"{settings.FRONTEND_URL.rstrip()}/verify?{urlencode({'token': token})}"
-    background_tasks.add_task(
-        send_plain_email,
-        created_user.email,
-        "Verify your Ohmatt account",
-        f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}",
-    )
+    verification_subject = "Verify your Ohmatt account"
+    verification_body = f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}"
+    if should_route_to_ohmattos(user_id=created_user.id, email=created_user.email):
+        enqueue_notification(
+            db,
+            user_id=created_user.id,
+            purpose="email-verification",
+            channel_type="email",
+            content={
+                "to": created_user.email,
+                "subject": verification_subject,
+                "body": verification_body,
+            },
+            idempotency_key=f"user:{created_user.id}:email-verification:registration",
+        )
+    else:
+        background_tasks.add_task(
+            send_plain_email,
+            created_user.email,
+            verification_subject,
+            verification_body,
+        )
     log_activity(db,
         request,
         created_user.id,
@@ -260,7 +284,10 @@ def register_user(
         entity_type="user",
         entity_id=created_user.id,
         description="User registered",
+        commit=False,
     )
+    db.commit()
+    db.refresh(created_user)
     return serialize_user(created_user)
 
 
@@ -273,8 +300,16 @@ def login_user(data: LoginRequest, request: Request, response: Response, db: Ses
     if preferences.get("two_factor_enabled"):
         if not data.two_factor_code:
             code = issue_2fa_code(user)
+            challenge_expiry = int((user.preferences or {}).get("two_factor_expires_at") or 0)
+            deliver_auth_email(
+                db,
+                user,
+                purpose="login-two-factor",
+                subject="Your Ohmatt sign-in code",
+                body=f"Your sign-in code is {code}. It expires in 10 minutes.",
+                idempotency_key=f"user:{user.id}:login-2fa:{challenge_expiry}",
+            )
             db.commit()
-            send_plain_email(user.email, "Your Ohmatt sign-in code", f"Your sign-in code is {code}. It expires in 10 minutes.")
             raise HTTPException(status_code=428, detail="Two-factor code required")
         if not verify_2fa_code(user, data.two_factor_code):
             db.commit()
@@ -505,7 +540,15 @@ def enable_two_factor(
     preferences.update(current_user.preferences or {})
     preferences["two_factor_pending"] = True
     current_user.preferences = preferences
-    send_plain_email(current_user.email, "Confirm Ohmatt two-factor authentication", f"Your confirmation code is {code}.")
+    challenge_expiry = int((current_user.preferences or {}).get("two_factor_expires_at") or 0)
+    deliver_auth_email(
+        db,
+        current_user,
+        purpose="two-factor-enrollment",
+        subject="Confirm Ohmatt two-factor authentication",
+        body=f"Your confirmation code is {code}.",
+        idempotency_key=f"user:{current_user.id}:2fa-enrollment:{challenge_expiry}",
+    )
     db.commit()
     return {"message": t("confirmation_code_sent", lang=user_language(current_user))}
 
@@ -552,7 +595,26 @@ def request_password_reset(data: ForgotPasswordRequest, db: Session = Depends(ge
     if user:
         token = generate_token(user.email, purpose=PASSWORD_RESET_PURPOSE)
         reset_url = build_password_reset_url(token)
-        send_password_reset_email(user.email, reset_url)
+        reset_body = "\n".join(
+            [
+                "You requested a password reset for your Ohmatt account.",
+                "",
+                f"Reset your password here: {reset_url}",
+                "",
+                "This link expires in 24 hours. If you did not request this, you can ignore this email.",
+            ]
+        )
+        token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+        deliver_auth_email(
+            db,
+            user,
+            purpose=PASSWORD_RESET_PURPOSE,
+            subject="Reset your Ohmatt password",
+            body=reset_body,
+            idempotency_key=f"user:{user.id}:password-reset:{token_fingerprint}",
+        )
+        if settings.OHMATTOS_ENABLED:
+            db.commit()
         if settings.PASSWORD_RESET_LINK_RESPONSE_ENABLED or not settings.is_production:
             response["reset_url"] = reset_url
 

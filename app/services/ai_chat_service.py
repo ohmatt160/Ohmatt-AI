@@ -16,7 +16,7 @@ client = OpenAI(
 
 class AIChatService:
     def __init__(self):
-        self.model = "meta/llama-3.3-70b-instruct"
+        self.model = "nvidia/llama-3.1-nemotron-70b-instruct"
 
     def respond(self, db: Session, user: User, message: str) -> str:
         currency = user_currency(user)

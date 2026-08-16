@@ -15,6 +15,7 @@ def log_activity(
     entity_id: str | int | None = None,
     description: str | None = None,
     metadata: dict | None = None,
+    commit: bool = True,
     **kwargs,
 ):
     """Log user activity"""
@@ -31,5 +32,8 @@ def log_activity(
         **kwargs
     )
     db.add(log)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return log

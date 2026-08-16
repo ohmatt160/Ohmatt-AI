@@ -110,7 +110,7 @@ htmlcov/
 # SQLite
 *.sqlite
 key.py
-.env.production.example
+!.env.production.example
 .dockerignore
 !.dockerignore
 *.pkl

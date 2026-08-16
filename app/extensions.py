@@ -64,6 +64,7 @@ def init_extensions(app=None):
     import app.models.messages
     import app.models.insight
     import app.models.finance
+    import app.models.integration_outbox
 
     try:
         Base.metadata.create_all(bind=engine)
