@@ -107,6 +107,14 @@ class Settings(BaseSettings):
 
     NVIDIA_API_KEY: str = Field(default="", env="NVIDIA_API_KEY")
     NVIDIA_BASE_URL: str = Field(default="https://integrate.api.nvidia.com/v1", env="NVIDIA_BASE_URL")
+
+    # Groq powers interactive Ohmatt chat through its OpenAI-compatible API.
+    # This API key belongs in the backend deployment secret manager only.
+    GROQ_API_KEY: str = Field(default="", env="GROQ_API_KEY")
+    GROQ_BASE_URL: str = Field(default="https://api.groq.com/openai/v1", env="GROQ_BASE_URL")
+    GROQ_CHAT_MODEL: str = Field(default="llama-3.3-70b-versatile", env="GROQ_CHAT_MODEL")
+    GROQ_CONNECT_TIMEOUT_SECONDS: float = Field(default=3.0, env="GROQ_CONNECT_TIMEOUT_SECONDS")
+    GROQ_READ_TIMEOUT_SECONDS: float = Field(default=25.0, env="GROQ_READ_TIMEOUT_SECONDS")
     
     BACKEND_CORS_ORIGINS: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",
@@ -168,6 +176,10 @@ class Settings(BaseSettings):
                 raise ValueError("AUTH_COOKIE_SECURE must be true when AUTH_COOKIE_SAMESITE=none")
             if self.DB_POOL_SIZE < 1 or self.DB_MAX_OVERFLOW < 0:
                 raise ValueError("Database pool settings are invalid")
+            if self.GROQ_API_KEY and not self.GROQ_BASE_URL.startswith("https://"):
+                raise ValueError("GROQ_BASE_URL must use HTTPS in production")
+            if self.GROQ_API_KEY and not self.GROQ_CHAT_MODEL.strip():
+                raise ValueError("GROQ_CHAT_MODEL is required when GROQ_API_KEY is configured")
             if self.OHMATTOS_ENABLED:
                 if not self.OHMATTOS_BASE_URL.startswith("https://"):
                     raise ValueError("OHMATTOS_BASE_URL must use HTTPS in production")

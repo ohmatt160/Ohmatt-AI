@@ -31,7 +31,14 @@ BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-temporary-password
 BACKEND_CORS_ORIGINS=https://your-vercel-app.vercel.app
 FRONTEND_URL=https://your-vercel-app.vercel.app
-NVIDIA_API_KEY=replace-with-your-nvidia-api-key
+GROQ_API_KEY=replace-with-your-groq-api-key
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_CHAT_MODEL=llama-3.3-70b-versatile
+GROQ_CONNECT_TIMEOUT_SECONDS=3
+GROQ_READ_TIMEOUT_SECONDS=25
+
+# Needed only for legacy non-chat insights.
+NVIDIA_API_KEY=
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 ```
 

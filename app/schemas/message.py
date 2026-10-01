@@ -4,7 +4,7 @@ from typing import Optional
 
 class MessageCreate(BaseModel):
     receiver_username: str = Field(...)
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=4000)
 
 class MessageEdit(BaseModel):
     content: str = Field(..., min_length=1)
