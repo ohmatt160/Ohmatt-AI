@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import httpx
+from openai import AuthenticationError
+
 from app.config import settings
 from app.services.ai_chat_service import AIChatService
 
@@ -20,6 +23,18 @@ class FakeClient:
     def __init__(self, content):
         self.completions = FakeCompletions(content)
         self.chat = SimpleNamespace(completions=self.completions)
+
+
+class FailingCompletions:
+    def create(self, **kwargs):
+        request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        response = httpx.Response(401, request=request, headers={"x-request-id": "req_test"})
+        raise AuthenticationError("Invalid API Key", response=response, body={"error": "invalid_api_key"})
+
+
+class FailingClient:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=FailingCompletions())
 
 
 def test_chat_uses_groq_model_and_verified_context(monkeypatch):
@@ -70,3 +85,21 @@ def test_chat_rejects_empty_provider_response(monkeypatch):
     response = service.respond(db=object(), user=user, message="Hello")
 
     assert response == "AI chat is being configured right now. Please try again shortly."
+
+
+def test_chat_reports_provider_credential_errors_without_exposing_details(monkeypatch):
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_that_is_not_a_real_secret")
+    service = AIChatService()
+    monkeypatch.setattr(service, "_client", FailingClient)
+    monkeypatch.setattr(
+        "app.services.ai_chat_service.transaction_context_service.build",
+        lambda *args: "Verified ledger coverage: 0 transactions.",
+    )
+    user = SimpleNamespace(id=42, username="matt", preferences={"currency": "NGN"})
+
+    response = service.respond(db=object(), user=user, message="Hello")
+
+    assert response == (
+        "AI chat is temporarily unavailable while its secure provider connection is being renewed. "
+        "Please try again shortly."
+    )
