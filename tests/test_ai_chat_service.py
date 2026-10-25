@@ -39,7 +39,7 @@ class FailingClient:
 
 def test_chat_uses_groq_model_and_verified_context(monkeypatch):
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key_that_is_not_a_real_secret")
-    monkeypatch.setattr(settings, "GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
+    monkeypatch.setattr(settings, "GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
 
     fake_client = FakeClient("Your spending looks steady.")
     service = AIChatService()
@@ -54,7 +54,7 @@ def test_chat_uses_groq_model_and_verified_context(monkeypatch):
 
     assert response == "Your spending looks steady."
     request = fake_client.completions.calls[0]
-    assert request["model"] == "llama-3.3-70b-versatile"
+    assert request["model"] == "openai/gpt-oss-120b"
     assert "Verified ledger coverage: all 2 transactions." in request["messages"][1]["content"]
     assert request["temperature"] == 0.25
 

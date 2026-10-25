@@ -33,7 +33,7 @@ BACKEND_CORS_ORIGINS=https://your-vercel-app.vercel.app
 FRONTEND_URL=https://your-vercel-app.vercel.app
 GROQ_API_KEY=replace-with-your-groq-api-key
 GROQ_BASE_URL=https://api.groq.com/openai/v1
-GROQ_CHAT_MODEL=llama-3.3-70b-versatile
+GROQ_CHAT_MODEL=openai/gpt-oss-120b
 GROQ_CONNECT_TIMEOUT_SECONDS=3
 GROQ_READ_TIMEOUT_SECONDS=25
 

@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # This API key belongs in the backend deployment secret manager only.
     GROQ_API_KEY: str = Field(default="", env="GROQ_API_KEY")
     GROQ_BASE_URL: str = Field(default="https://api.groq.com/openai/v1", env="GROQ_BASE_URL")
-    GROQ_CHAT_MODEL: str = Field(default="llama-3.3-70b-versatile", env="GROQ_CHAT_MODEL")
+    GROQ_CHAT_MODEL: str = Field(default="openai/gpt-oss-120b", env="GROQ_CHAT_MODEL")
     GROQ_CONNECT_TIMEOUT_SECONDS: float = Field(default=3.0, env="GROQ_CONNECT_TIMEOUT_SECONDS")
     GROQ_READ_TIMEOUT_SECONDS: float = Field(default=25.0, env="GROQ_READ_TIMEOUT_SECONDS")
     
