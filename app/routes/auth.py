@@ -507,12 +507,14 @@ def delete_own_account(
     db: Session = Depends(get_db),
 ):
     """Delete the authenticated user's account and owned records."""
+    db.query(User.id).filter(User.id == current_user.id).with_for_update().one()
     from app.models.bank_account import BankAccount
     from app.models.bank_connection import BankConnection
     from app.models.bank_transaction import BankTransaction
     from app.models.finance import Budget, RecurringTransaction, TransactionCategory, TransactionReceipt
     from app.models.insight import Insight
     from app.models.messages import Messages
+    from app.models.ai_memory import AIPersonalMemory
     from app.models.transaction import Transaction
 
     db.query(TransactionReceipt).filter_by(user_id=current_user.id).delete()
@@ -520,6 +522,7 @@ def delete_own_account(
     db.query(RecurringTransaction).filter_by(user_id=current_user.id).delete()
     db.query(TransactionCategory).filter_by(user_id=current_user.id).delete()
     db.query(Insight).filter_by(user_id=current_user.id).delete()
+    db.query(AIPersonalMemory).filter_by(user_id=current_user.id).delete()
     db.query(Messages).filter((Messages.sender_id == current_user.id) | (Messages.receiver_id == current_user.id)).delete(synchronize_session=False)
     db.query(Transaction).filter_by(user_id=current_user.id).delete()
     db.query(BankTransaction).filter_by(user_id=current_user.id).delete()

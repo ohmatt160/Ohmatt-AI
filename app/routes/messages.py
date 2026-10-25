@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel, Field
@@ -9,8 +9,10 @@ from datetime import datetime
 from app.extensions import get_db
 from app.models.user import User
 from app.models.messages import Messages
+from app.models.ai_memory import AIPersonalMemory
 from app.models.insight import Insight
 from app.schemas.message import MessageCreate, MessageResponse, MessageEdit, ForwardRequest
+from app.schemas.ai_memory import AIPersonalMemoryCreate, AIPersonalMemoryResponse
 from app.utils.auth import get_current_user
 from app.utils.i18n import t, user_language
 
@@ -111,27 +113,29 @@ async def get_ai_messages(
     """Get personal AI chat history with explicit message roles"""
     ai_user = get_or_create_ai_user(db)
 
-    ai_messages = (
+    ai_messages = list(reversed(
         db.query(Messages)
         .filter(
             ((Messages.sender_id == current_user.id) & (Messages.receiver_id == ai_user.id)) |
-            ((Messages.sender_id == ai_user.id) & (Messages.receiver_id == current_user.id))
+            ((Messages.sender_id == ai_user.id) & (Messages.receiver_id == current_user.id)),
+            Messages.is_deleted.is_not(True),
         )
-        .order_by(Messages.timestamp.asc(), Messages.id.asc())
+        .order_by(Messages.timestamp.desc(), Messages.id.desc())
         .limit(500)
         .all()
-    )
+    ))
 
-    legacy_messages = (
+    legacy_messages = list(reversed(
         db.query(Messages)
         .filter(
             Messages.sender_id == current_user.id,
-            Messages.receiver_id == current_user.id
+            Messages.receiver_id == current_user.id,
+            Messages.is_deleted.is_not(True),
         )
-        .order_by(Messages.timestamp.asc(), Messages.id.asc())
+        .order_by(Messages.timestamp.desc(), Messages.id.desc())
         .limit(500)
         .all()
-    )
+    ))
 
     serialized = [
         serialize_ai_message(message, current_user, ai_user)
@@ -152,6 +156,125 @@ async def get_ai_messages(
 
     serialized.sort(key=lambda item: (item["timestamp"] or "", item["id"]))
     return serialized
+
+
+def _delete_ai_history(db: Session, user_id: int, ai_user_id: int) -> int:
+    ai_message_ids = select(Messages.id).where(
+            ((Messages.sender_id == user_id) & (Messages.receiver_id == ai_user_id)) |
+            ((Messages.sender_id == ai_user_id) & (Messages.receiver_id == user_id)) |
+            ((Messages.sender_id == user_id) & (Messages.receiver_id == user_id))
+    )
+    db.query(Messages).filter(Messages.forwarded_from_id.in_(ai_message_ids)).update(
+        {Messages.forwarded_from_id: None},
+        synchronize_session=False,
+    )
+    deleted_ai_messages = (
+        db.query(Messages)
+        .filter(
+            ((Messages.sender_id == user_id) & (Messages.receiver_id == ai_user_id)) |
+            ((Messages.sender_id == ai_user_id) & (Messages.receiver_id == user_id))
+        )
+        .delete(synchronize_session=False)
+    )
+    deleted_legacy_messages = (
+        db.query(Messages)
+        .filter(Messages.sender_id == user_id, Messages.receiver_id == user_id)
+        .delete(synchronize_session=False)
+    )
+    return deleted_ai_messages + deleted_legacy_messages
+
+
+@router.get("/ai/memories", response_model=List[AIPersonalMemoryResponse])
+def get_ai_memories(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(AIPersonalMemory)
+        .filter(AIPersonalMemory.user_id == current_user.id)
+        .order_by(AIPersonalMemory.created_at.desc(), AIPersonalMemory.id.desc())
+        .limit(50)
+        .all()
+    )
+
+
+@router.post("/ai/memories", response_model=AIPersonalMemoryResponse, status_code=201)
+def create_ai_memory(
+    data: AIPersonalMemoryCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    content = data.content.strip()
+    if not content:
+        raise HTTPException(422, "Memory cannot be empty")
+
+    db.query(User.id).filter(User.id == current_user.id).with_for_update().one()
+    count = (
+        db.query(func.count(AIPersonalMemory.id))
+        .filter(AIPersonalMemory.user_id == current_user.id)
+        .scalar()
+        or 0
+    )
+    if count >= 50:
+        raise HTTPException(409, "Personal memory limit reached")
+
+    memory = AIPersonalMemory(user_id=current_user.id, content=content)
+    db.add(memory)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "This personal memory already exists")
+    db.refresh(memory)
+    return memory
+
+
+@router.delete("/ai/memories/{memory_id}")
+def delete_ai_memory(
+    memory_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    memory = (
+        db.query(AIPersonalMemory)
+        .filter(
+            AIPersonalMemory.id == memory_id,
+            AIPersonalMemory.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not memory:
+        raise HTTPException(404, "Memory not found")
+    db.delete(memory)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.delete("/ai/history")
+def clear_ai_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    ai_user = get_or_create_ai_user(db)
+    deleted_count = _delete_ai_history(db, current_user.id, ai_user.id)
+    db.commit()
+    return {"deleted_messages": deleted_count, "memories_preserved": True}
+
+
+@router.delete("/ai/data")
+def delete_ai_data(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    ai_user = get_or_create_ai_user(db)
+    deleted_count = _delete_ai_history(db, current_user.id, ai_user.id)
+    deleted_memories = (
+        db.query(AIPersonalMemory)
+        .filter(AIPersonalMemory.user_id == current_user.id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {"deleted_messages": deleted_count, "deleted_memories": deleted_memories}
 
 
 @router.get("/unread-count")
@@ -245,7 +368,13 @@ async def send_message(
 
     # If messaging AI, get smart response
     if data.receiver_username == "ai_assistant":
-        ai_response = ai_chat.respond(db, current_user, data.content)
+        ai_response = ai_chat.respond(
+            db,
+            current_user,
+            data.content,
+            ai_user_id=receiver.id,
+            exclude_message_id=user_msg.id,
+        )
 
         ai_msg = Messages(
             sender_id=receiver.id,

@@ -62,6 +62,7 @@ def init_extensions(app=None):
     import app.models.blacklist
     import app.models.session
     import app.models.messages
+    import app.models.ai_memory
     import app.models.insight
     import app.models.finance
     import app.models.integration_outbox

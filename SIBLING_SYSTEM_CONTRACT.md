@@ -77,6 +77,14 @@ Accepted response:
 - Stale processing claims are recovered after the configured safety window.
 - Delivery remains at-least-once at external-provider boundaries; provider IDs and callbacks must be used for final reconciliation.
 
+## Shared Personal AI Context
+
+- Ohmatt owns AI conversation history, saved personal memories, the financial ledger, and the service that assembles AI context.
+- OhmattOS and future sibling AI products must not read or write Ohmatt's database directly or create duplicate personal-memory stores.
+- Saved memories are user-created, user-deletable personalization data. Financial answers must continue to use Ohmatt's verified ledger, not saved memories or chat history.
+- Any future cross-app AI context access requires a versioned Ohmatt API with user-scoped authorization. A general OhmattOS service key is not sufficient authorization to read a person's private AI context.
+- Context retrieval is bounded, and AI providers receive only the context needed for a request. Transcript/history clearing and full AI-data deletion retain their distinct semantics as documented in `docs/AI_PERSONAL_CONTEXT.md`.
+
 ## Error Handling
 
 - `400`: invalid request; correct before retry.
