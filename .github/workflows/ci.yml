@@ -1,0 +1,23 @@
+name: Backend and frontend checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      ENV: test
+      DATABASE_URL: sqlite:///./test.db
+      AUTO_SEED_GEO: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements_fastapi.txt
+      - run: python -m pip install -r requirements_test.txt
+      - run: python -m pytest -q
+

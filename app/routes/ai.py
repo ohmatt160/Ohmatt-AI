@@ -1,14 +1,10 @@
-from datetime import datetime
-
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.extensions import get_db
-from app.middleware.activity import log_activity
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.services.ai_service import ai_service
 from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -16,34 +12,19 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 @router.post("/retrain")
 def retrain_ai_model(
-    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not current_user.is_admin:
         raise HTTPException(403, "Admin access required")
 
-    corrected = (
-        db.query(Transaction)
-        .filter(Transaction.user_category.isnot(None))
-        .all()
+    # Online training from the live multi-user ledger risks cross-user data
+    # leakage and produces inconsistent per-worker models. Training is disabled
+    # until a reviewed, privacy-safe offline dataset/artifact pipeline exists.
+    raise HTTPException(
+        status_code=409,
+        detail="Online model retraining is disabled until a reviewed training dataset is available.",
     )
-    trained_samples = ai_service.retrain_from_corrections(corrected)
-
-    log_activity(db,
-        request,
-        current_user.id,
-        "ai_retrain",
-        entity_type="ai_model",
-        description=f"AI retrained with {trained_samples} corrected samples",
-        metadata={"corrected_samples": trained_samples, "trained_at": datetime.utcnow().isoformat()},
-    )
-
-    return {
-        "message": "AI retraining completed",
-        "corrected_samples": trained_samples,
-        "status": "completed",
-    }
 
 
 @router.get("/accuracy")

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, timedelta
+import logging
 
 
 from app.extensions import get_db
@@ -21,6 +22,7 @@ from app.middleware.activity import log_activity
 
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
+logger = logging.getLogger(__name__)
 
 
 class TransactionUpdate(BaseModel):
@@ -72,7 +74,13 @@ async def create_transaction(
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
-    InsightService.generate_insights(db, current_user)
+    try:
+        InsightService.generate_insights(db, current_user)
+    except Exception:
+        # Insight generation is an enhancement and must not turn a committed
+        # transaction into an apparent failure that users may retry.
+        db.rollback()
+        logger.exception("Insight generation failed user_id=%s", current_user.id)
     log_activity(db,
         request,
         current_user.id,

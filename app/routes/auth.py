@@ -1,12 +1,14 @@
 import smtplib
-import random
-import time
+import secrets
 import hashlib
+import hmac
+import logging
+import time
 from email.mime.text import MIMEText
 from urllib.parse import urlencode
 import requests
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status, Form
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
@@ -15,8 +17,19 @@ from datetime import datetime, timedelta
 
 from app.config import settings
 from app.extensions import get_db
-from app.schemas.user import UserCreate, UserResponse, Token, VerifyRequest, LoginRequest, ProfileUpdate, \
-    ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, TwoFactorVerifyRequest
+from app.schemas.user import (
+    UserCreate,
+    UserResponse,
+    Token,
+    VerifyRequest,
+    LoginRequest,
+    ProfileUpdate,
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    TwoFactorVerifyRequest,
+    TwoFactorDisableRequest,
+)
 from app.services.user_service import UserService
 from app.services.integration_outbox_service import enqueue_notification, should_route_to_ohmattos
 from app.utils.auth import create_access_token, decode_token_payload, verify_token, get_current_user, get_request_token, confirm_token, \
@@ -29,6 +42,16 @@ from app.schemas.user import LoginRequest
 from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("ohmatt.auth")
+
+
+def request_client_ip(request: Request) -> Optional[str]:
+    peer_ip = request.client.host if request.client else None
+    if peer_ip in settings.trusted_proxy_ips:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")
+        if forwarded and forwarded[0].strip():
+            return forwarded[0].strip()
+    return peer_ip
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 PASSWORD_RESET_PURPOSE = "password-reset"
 
@@ -79,10 +102,65 @@ def create_user_session(db: Session, user: User, token: str, request: Optional[R
     session = UserSession(
         user_id=user.id,
         token_jti=token_jti,
-        ip_address=request.client.host if request and request.client else None,
+        ip_address=request_client_ip(request) if request else None,
         user_agent=request.headers.get("user-agent")[:500] if request else None,
     )
     db.add(session)
+    db.commit()
+
+
+def is_known_device(db: Session, user: User, request: Request) -> bool:
+    """Match both network address and browser signature to a prior session."""
+    client_ip = request_client_ip(request)
+    user_agent = (request.headers.get("user-agent") or "")[:500]
+    if not client_ip or not user_agent:
+        return False
+    return db.query(UserSession.id).filter(
+        UserSession.user_id == user.id,
+        UserSession.ip_address == client_ip,
+        UserSession.user_agent == user_agent,
+    ).first() is not None
+
+
+def verify_login_challenge(db: Session, user: User, request: Request, code: Optional[str]) -> None:
+    preferences = dict(user.preferences or {})
+    has_prior_sessions = db.query(UserSession.id).filter(UserSession.user_id == user.id).first() is not None
+    new_device = (
+        settings.RISK_BASED_LOGIN_CHALLENGE_ENABLED
+        and (not has_prior_sessions or not is_known_device(db, user, request))
+    )
+    needs_challenge = bool(preferences.get("two_factor_enabled") or new_device or user.is_admin)
+    if not needs_challenge:
+        return
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Verify your email before completing sign-in verification")
+    if not code:
+        current_preferences = user.preferences or {}
+        if has_active_2fa_challenge(current_preferences):
+            raise HTTPException(status_code=428, detail="Two-factor code required")
+        challenge = issue_2fa_code(user)
+        challenge_expiry = int((user.preferences or {}).get("two_factor_expires_at") or 0)
+        delivered = deliver_auth_email(
+            db,
+            user,
+            purpose="login-two-factor",
+            subject="Your Ohmatt sign-in code",
+            body=f"Your sign-in code is {challenge}. It expires in 10 minutes.",
+            idempotency_key=f"user:{user.id}:login-2fa:{challenge_expiry}",
+        )
+        db.commit()
+        if not delivered:
+            preferences = dict(user.preferences or {})
+            preferences.pop("two_factor_code_hash", None)
+            preferences.pop("two_factor_expires_at", None)
+            user.preferences = preferences
+            db.commit()
+            logger.error("Login challenge delivery unavailable user_id=%s", user.id)
+            raise HTTPException(status_code=503, detail="Sign-in verification is temporarily unavailable")
+        raise HTTPException(status_code=428, detail="Two-factor code required")
+    if not verify_2fa_code(user, code):
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     db.commit()
 
 
@@ -225,9 +303,9 @@ def deliver_auth_email(
 
 
 def issue_2fa_code(user: User) -> str:
-    code = f"{random.randint(0, 999999):06d}"
+    code = f"{secrets.randbelow(1_000_000):06d}"
     preferences = dict(user.preferences or {})
-    preferences["two_factor_code"] = code
+    preferences["two_factor_code_hash"] = hashlib.sha256(code.encode()).hexdigest()
     preferences["two_factor_expires_at"] = (time.time() + 600)
     user.preferences = preferences
     return code
@@ -235,13 +313,27 @@ def issue_2fa_code(user: User) -> str:
 
 def verify_2fa_code(user: User, code: str) -> bool:
     preferences = dict(user.preferences or {})
-    expires_at = float(preferences.get("two_factor_expires_at") or 0)
-    valid = preferences.get("two_factor_code") == code and time.time() <= expires_at
+    try:
+        expires_at = float(preferences.get("two_factor_expires_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    expected_hash = preferences.get("two_factor_code_hash")
+    supplied_hash = hashlib.sha256((code or "").encode()).hexdigest()
+    valid = bool(expected_hash) and hmac.compare_digest(expected_hash, supplied_hash) and time.time() <= expires_at
     if valid:
-        preferences.pop("two_factor_code", None)
+        preferences.pop("two_factor_code_hash", None)
         preferences.pop("two_factor_expires_at", None)
         user.preferences = preferences
     return valid
+
+
+def has_active_2fa_challenge(preferences: dict) -> bool:
+    if not isinstance(preferences.get("two_factor_code_hash"), str):
+        return False
+    try:
+        return time.time() <= float(preferences.get("two_factor_expires_at") or 0)
+    except (TypeError, ValueError):
+        return False
 
 
 @router.post("/register", response_model=UserResponse)
@@ -296,25 +388,7 @@ def login_user(data: LoginRequest, request: Request, response: Response, db: Ses
     user = UserService.authenticate_user(db, data.username, data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    preferences = dict(user.preferences or {})
-    if preferences.get("two_factor_enabled"):
-        if not data.two_factor_code:
-            code = issue_2fa_code(user)
-            challenge_expiry = int((user.preferences or {}).get("two_factor_expires_at") or 0)
-            deliver_auth_email(
-                db,
-                user,
-                purpose="login-two-factor",
-                subject="Your Ohmatt sign-in code",
-                body=f"Your sign-in code is {code}. It expires in 10 minutes.",
-                idempotency_key=f"user:{user.id}:login-2fa:{challenge_expiry}",
-            )
-            db.commit()
-            raise HTTPException(status_code=428, detail="Two-factor code required")
-        if not verify_2fa_code(user, data.two_factor_code):
-            db.commit()
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        db.commit()
+    verify_login_challenge(db, user, request, data.two_factor_code)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     create_user_session(db, user, access_token, request)
     set_auth_cookie(response, access_token)
@@ -329,10 +403,17 @@ def login_user(data: LoginRequest, request: Request, response: Response, db: Ses
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/login/form", response_model=Token, include_in_schema=False)
-def login_form(request: Request, response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_form(
+    request: Request,
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    two_factor_code: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
     user = UserService.authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    verify_login_challenge(db, user, request, two_factor_code)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     create_user_session(db, user, access_token, request)
     set_auth_cookie(response, access_token)
@@ -575,12 +656,16 @@ def confirm_two_factor(
 
 @router.post("/2fa/disable")
 def disable_two_factor(
+    data: TwoFactorDisableRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if not current_user.check_password(data.current_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     preferences = dict(current_user.preferences or {})
     preferences["two_factor_enabled"] = False
     preferences.pop("two_factor_code", None)
+    preferences.pop("two_factor_code_hash", None)
     preferences.pop("two_factor_expires_at", None)
     preferences.pop("two_factor_pending", None)
     current_user.preferences = preferences

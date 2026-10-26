@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     AUTH_COOKIE_NAME: str = Field(default="ohmatt_access_token", env="AUTH_COOKIE_NAME")
     AUTH_COOKIE_SECURE: bool = Field(default=True, env="AUTH_COOKIE_SECURE")
     AUTH_COOKIE_SAMESITE: str = Field(default="lax", env="AUTH_COOKIE_SAMESITE")
+    TRUSTED_PROXY_IPS: str = Field(default="", env="TRUSTED_PROXY_IPS")
+    RISK_BASED_LOGIN_CHALLENGE_ENABLED: bool = Field(default=False, env="RISK_BASED_LOGIN_CHALLENGE_ENABLED")
+    RATE_LIMIT_REDIS_URL: str = Field(default="", env="RATE_LIMIT_REDIS_URL")
     ADMIN_EMAILS: str = Field(default="", env="ADMIN_EMAILS")
     BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_EMAIL")
     BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PASSWORD")
@@ -141,6 +144,10 @@ class Settings(BaseSettings):
         return emails
 
     @property
+    def trusted_proxy_ips(self) -> set[str]:
+        return {ip.strip() for ip in self.TRUSTED_PROXY_IPS.split(",") if ip.strip()}
+
+    @property
     def ohmattos_canary_emails(self) -> set[str]:
         return {
             email.strip().lower()
@@ -166,6 +173,10 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be set to a secure value in production")
             if self.DATABASE_URL.startswith("sqlite"):
                 raise ValueError("DATABASE_URL must use PostgreSQL in production")
+            if not self.RATE_LIMIT_REDIS_URL.startswith(("redis://", "rediss://")):
+                raise ValueError("RATE_LIMIT_REDIS_URL must configure shared Redis rate limiting in production")
+            if not self.RISK_BASED_LOGIN_CHALLENGE_ENABLED:
+                raise ValueError("RISK_BASED_LOGIN_CHALLENGE_ENABLED must be true in production")
             if not self.cors_origins:
                 raise ValueError("BACKEND_CORS_ORIGINS must include your frontend URL in production")
             if "*" in self.cors_origins:

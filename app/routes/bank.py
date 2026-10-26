@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import hashlib
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
@@ -34,6 +35,7 @@ from app.utils.i18n import t, user_language
 from app.middleware.activity import log_activity
 
 router = APIRouter(prefix="/bank", tags=["banking"])
+logger = logging.getLogger(__name__)
 
 
 
@@ -437,7 +439,8 @@ def get_flutterwave_banks(
     try:
         banks = get_provider_instance(provider).list_banks(country_code)
     except RuntimeError as exc:
-        raise HTTPException(503, str(exc)) from exc
+        logger.warning("Bank directory provider unavailable provider=%s error_type=%s", provider.api_name, type(exc).__name__)
+        raise HTTPException(503, "Bank services are temporarily unavailable. Please try again.") from exc
     return {"country": country_code, "banks": banks}
 
 
@@ -482,7 +485,8 @@ def connect_bank(
         }
 
     if link_data.get("error"):
-        raise HTTPException(400, link_data["error"])
+        logger.warning("Bank connection initialization rejected provider=%s", provider.api_name)
+        raise HTTPException(502, "Could not start your bank connection. Please try again.")
 
     log_activity(db,
         request,
@@ -515,7 +519,8 @@ def exchange_bank_token(
     token_data = provider_client.exchange_token(data.public_token, data.metadata)
 
     if token_data.get("error") or token_data.get("success") is False:
-        raise HTTPException(400, token_data.get("error") or "Token exchange failed")
+        logger.warning("Bank token exchange rejected provider=%s", provider.api_name)
+        raise HTTPException(502, "Could not complete your bank connection. Please try again.")
 
     access_token = token_data.get("access_token")
     if not access_token:
@@ -612,7 +617,8 @@ def verify_bank_account(
         try:
             supported_banks = provider_client.list_banks(country_code)
         except RuntimeError as exc:
-            raise HTTPException(503, str(exc)) from exc
+            logger.warning("Bank directory provider unavailable provider=%s error_type=%s", provider.api_name, type(exc).__name__)
+            raise HTTPException(503, "Bank services are temporarily unavailable. Please try again.") from exc
         selected_bank = next(
             (bank for bank in supported_banks if bank["code"] == data.account_bank),
             None,
@@ -628,7 +634,8 @@ def verify_bank_account(
     )
 
     if verification.get("error") or verification.get("success") is False:
-        raise HTTPException(400, verification.get("error") or "Account verification failed")
+        logger.warning("Bank account verification rejected provider=%s", provider.api_name)
+        raise HTTPException(400, "Could not verify that account. Check the details and try again.")
 
     account_number = str(verification.get("account_number") or data.account_number)
     account_name = verification.get("account_name") or "Verified bank account"
@@ -815,5 +822,10 @@ def test_provider(
         health = provider.health_check() if hasattr(provider, 'health_check') else {"status": "unknown"}
 
         return {"provider": provider_name, "health": health}
-    except Exception as e:
-        return {"provider": provider_name, "status": "error", "error": str(e)}
+    except Exception:
+        logger.exception("Provider health check failed provider=%s", provider_name)
+        return {
+            "provider": provider_name,
+            "status": "error",
+            "error": "Provider connection could not be verified.",
+        }

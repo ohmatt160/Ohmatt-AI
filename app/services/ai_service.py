@@ -1,14 +1,28 @@
 import os
+import logging
+import re
 import joblib
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 from typing import List, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.transaction import Transaction
 from app.utils.currency import format_currency
+
+logger = logging.getLogger(__name__)
+
+CATEGORY_KEYWORDS = {
+    "Food & Dining": ("restaurant", "cafe", "coffee", "uber eats", "doordash", "food", "grocery", "market", "supermarket", "mcdonald", "kfc", "pizza", "bakery"),
+    "Transportation": ("uber", "bolt", "lyft", "taxi", "fuel", "petrol", "gas station", "parking", "bus", "train", "airline", "flight"),
+    "Shopping": ("amazon", "walmart", "target", "shop", "store", "clothing", "fashion", "ikea", "electronics"),
+    "Bills & Utilities": ("electric", "water bill", "internet", "utility", "power", "telecom", "airtime", "data plan", "rent"),
+    "Entertainment": ("netflix", "spotify", "cinema", "movie", "concert", "gaming", "playstation", "steam"),
+    "Health": ("pharmacy", "hospital", "clinic", "doctor", "medical", "health", "dental"),
+    "Travel": ("hotel", "airbnb", "booking.com", "travel", "resort"),
+    "Education": ("school", "tuition", "university", "course", "books"),
+    "Income": ("salary", "payroll", "interest payment", "dividend", "refund"),
+    "Transfers": ("transfer", "wire", "cash withdrawal", "atm"),
+}
 
 
 class AIService:
@@ -17,22 +31,15 @@ class AIService:
         vectorizer_path = os.path.join(service_dir, "vectorizer.pkl")
         model_path = os.path.join(service_dir, "transaction_model.pkl")
 
+        self.vectorizer = None
+        self.clf = None
         try:
             self.vectorizer = joblib.load(vectorizer_path)
             self.clf = joblib.load(model_path)
-        except:
-            csv_path = os.path.join(service_dir, "..", "..", "transactions.csv")
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path)
-                self.vectorizer = TfidfVectorizer()
-                X = self.vectorizer.fit_transform(df['description'].fillna(''))
-                self.clf = RandomForestClassifier()
-                self.clf.fit(X, df['category'])
-                joblib.dump(self.vectorizer, vectorizer_path)
-                joblib.dump(self.clf, model_path)
-            else:
-                self.vectorizer = TfidfVectorizer()
-                self.clf = RandomForestClassifier()
+            if not hasattr(self.clf, "classes_"):
+                self.vectorizer = self.clf = None
+        except Exception as exc:
+            logger.info("Transaction model unavailable; using category rules (%s)", type(exc).__name__)
 
         self.top_n = 3
         self.service_dir = service_dir
@@ -40,18 +47,32 @@ class AIService:
     def categorize_transaction(self, description: str) -> Tuple[str, float]:
         if not description:
             return "Uncategorized", 0.0
-        try:
-            X = self.vectorizer.transform([description])
-            if hasattr(self.clf, "predict_proba"):
-                proba = self.clf.predict_proba(X)[0]
-                classes = self.clf.classes_
-                top_indices = np.argsort(proba)[::-1][:self.top_n]
-                return classes[top_indices[0]], float(proba[top_indices[0]])
-            else:
-                category = self.clf.predict(X)[0]
-                return category, 1.0
-        except:
-            return "Uncategorized", 0.0
+        normalized = re.sub(r"[^a-z0-9]+", " ", description.lower()).strip()
+        # Merchant and descriptor rules provide predictable behavior even when
+        # no trained artifact is deployed or model confidence is low.
+        for category, terms in CATEGORY_KEYWORDS.items():
+            if any(re.search(rf"\b{re.escape(term)}\b", normalized) for term in terms):
+                return category, 0.85
+        if self.vectorizer is not None and self.clf is not None:
+            try:
+                X = self.vectorizer.transform([description])
+                if hasattr(self.clf, "predict_proba"):
+                    proba = self.clf.predict_proba(X)[0]
+                    classes = self.clf.classes_
+                    top_indices = np.argsort(proba)[::-1][:self.top_n]
+                    confidence = float(proba[top_indices[0]])
+                    predicted = str(classes[top_indices[0]]).strip()
+                    if confidence >= 0.35 and predicted and predicted.lower() != "uncategorized":
+                        return predicted, confidence
+                else:
+                    category = str(self.clf.predict(X)[0]).strip()
+                    if category and category.lower() != "uncategorized":
+                        return category, 1.0
+            except Exception:
+                logger.exception("Transaction categorization model failed")
+        # Keep unknown merchants visible in reports without claiming a confident
+        # semantic category. The low score makes the classification auditable.
+        return "Other", 0.15
 
     def analyze_spending(
         self,
@@ -74,27 +95,5 @@ class AIService:
             f"{category}: {count} transactions, net {format_currency(float(amount or 0), currency)}"
             for category, count, amount in rows
         ]
-
-    def retrain_from_corrections(self, corrections: List[Transaction]) -> int:
-        rows = [
-            {
-                "description": tx.description or "",
-                "category": tx.user_category or tx.category or "Uncategorized",
-            }
-            for tx in corrections
-            if tx.description and (tx.user_category or tx.category)
-        ]
-        if not rows:
-            return 0
-
-        df = pd.DataFrame(rows)
-        self.vectorizer = TfidfVectorizer()
-        X = self.vectorizer.fit_transform(df["description"].fillna(""))
-        self.clf = RandomForestClassifier()
-        self.clf.fit(X, df["category"])
-        joblib.dump(self.vectorizer, os.path.join(self.service_dir, "vectorizer.pkl"))
-        joblib.dump(self.clf, os.path.join(self.service_dir, "transaction_model.pkl"))
-        return len(rows)
-
 
 ai_service = AIService()

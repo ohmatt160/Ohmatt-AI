@@ -81,10 +81,12 @@ class ProfileUpdate(BaseModel):
     timezone: Optional[str] = None
     notifications: Optional[bool] = None
     email_alerts: Optional[bool] = None
-    two_factor_enabled: Optional[bool] = None
     transaction_alerts: Optional[bool] = None
     currency: Optional[str] = None
     date_format: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
@@ -99,3 +101,6 @@ class ResetPasswordRequest(BaseModel):
 
 class TwoFactorVerifyRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=6)
+
+class TwoFactorDisableRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)

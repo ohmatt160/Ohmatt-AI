@@ -1,9 +1,11 @@
 import asyncio
+import logging
 import os
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 from app.routes import api_router
@@ -11,6 +13,13 @@ from app.config import settings
 from app.extensions import init_extensions, engine, Base
 from app.middleware.security import SecurityMiddleware
 from app.services.integration_outbox_service import run_outbox_worker
+from app.utils.errors import safe_server_error_response, safe_validation_response
+
+logger = logging.getLogger("ohmatt.api")
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 # Static paths (if you have a frontend)
@@ -59,10 +68,25 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        if not settings.is_production:
-            raise exc
-        print(f"[ERROR] Unhandled exception at {request.url.path}: {type(exc).__name__}: {exc}")
-        return JSONResponse({"detail": "Internal server error"}, status_code=500)
+        error_id = uuid4().hex
+        logger.error(
+            "Unhandled request exception error_id=%s request_id=%s method=%s path=%s",
+            error_id,
+            getattr(request.state, "request_id", None),
+            request.method,
+            request.url.path,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return safe_server_error_response(error_id, request)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        logger.info(
+            "Request validation failed method=%s path=%s",
+            request.method,
+            request.url.path,
+        )
+        return safe_validation_response(exc)
     # Health check
     @app.get("/health")
     async def health_check():
