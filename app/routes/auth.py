@@ -249,6 +249,23 @@ def build_password_reset_url(token: str) -> str:
     return f"{base_url}/reset-password?{urlencode({'token': token})}"
 
 
+def classify_sendgrid_failure(status_code: int, response_text: str) -> str:
+    response_hint = (response_text or "").lower()
+    if status_code == 401:
+        if any(hint in response_hint for hint in ("maximum credits exceeded", "credit limit", "credits exceeded")):
+            return "free_trial_credit_limit"
+        return "invalid_api_key_or_permissions"
+    if status_code == 403 and any(
+        hint in response_hint for hint in ("sender", "from address", "verified")
+    ):
+        return "sender_identity_not_verified"
+    if status_code == 403:
+        return "account_restricted_or_not_unlocked"
+    if status_code == 429:
+        return "provider_rate_limited"
+    return "provider_rejected_request"
+
+
 def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
     if not settings.SENDGRID_API_KEY or not settings.SENDGRID_FROM_EMAIL:
         logger.error(
@@ -290,19 +307,7 @@ def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
         if 200 <= response.status_code < 300:
             logger.info("SendGrid accepted auth email status=%s", response.status_code)
             return True
-        response_hint = response.text.lower()
-        if response.status_code == 401:
-            failure_reason = "invalid_api_key"
-        elif response.status_code == 403 and any(
-            hint in response_hint for hint in ("sender", "from address", "verified")
-        ):
-            failure_reason = "sender_identity_not_verified"
-        elif response.status_code == 403:
-            failure_reason = "account_restricted_or_not_unlocked"
-        elif response.status_code == 429:
-            failure_reason = "provider_rate_limited"
-        else:
-            failure_reason = "provider_rejected_request"
+        failure_reason = classify_sendgrid_failure(response.status_code, response.text)
         logger.error("SendGrid rejected auth email status=%s reason=%s", response.status_code, failure_reason)
         return False
     except requests.RequestException:
