@@ -1,7 +1,6 @@
 # app/routes/webhooks.py
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 from datetime import datetime
 import hashlib, hmac, json
 from app.extensions import get_db
@@ -14,10 +13,20 @@ from app.utils.i18n import user_currency
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
+def _decode_json_object(body: bytes) -> dict:
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
+    return payload
+
+
 @router.post("/flutterwave")
 async def flutterwave_webhook(request: Request, db: Session = Depends(get_db)):
     """Receive transaction notifications from Flutterwave"""
-    payload = await request.json()
+    payload = _decode_json_object(await request.body())
     signature = request.headers.get("verif-hash", "")
 
     expected_signature = settings.FLUTTERWAVE_WEBHOOK_SECRET
@@ -28,10 +37,14 @@ async def flutterwave_webhook(request: Request, db: Session = Depends(get_db)):
 
     event = payload.get("event")
     data = payload.get("data", {})
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
     if event == "charge.completed" and data.get("status") == "successful":
         # Find user by customer email
         customer = data.get("customer", {})
+        if not isinstance(customer, dict):
+            raise HTTPException(status_code=400, detail="Invalid webhook payload")
         email = customer.get("email")
         if email:
             user = db.query(User).filter_by(email=email).first()
@@ -65,11 +78,13 @@ async def flutterwave_webhook(request: Request, db: Session = Depends(get_db)):
 @router.post("/paystack")
 async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
     """Receive transaction notifications from Paystack"""
-    payload = await request.json()
+    payload = _decode_json_object(await request.body())
     signature = request.headers.get("x-paystack-signature", "")
 
     event = payload.get("event")
     data = payload.get("data", {})
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
     webhook_secret = settings.PAYSTACK_WEBHOOK_SECRET or settings.PAYSTACK_SECRET_KEY
     if not webhook_secret:
@@ -85,6 +100,8 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
 
     if event == "charge.success":
         customer = data.get("customer", {})
+        if not isinstance(customer, dict):
+            raise HTTPException(status_code=400, detail="Invalid webhook payload")
         email = customer.get("email")
         if email:
             user = db.query(User).filter_by(email=email).first()
@@ -117,7 +134,7 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
 @router.post("/plaid")
 async def plaid_webhook(request: Request):
     """Receive transaction updates from Plaid"""
-    payload = await request.json()
+    payload = _decode_json_object(await request.body())
 
     webhook_type = payload.get("webhook_type")
     webhook_code = payload.get("webhook_code")
