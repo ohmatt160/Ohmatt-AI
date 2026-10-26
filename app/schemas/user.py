@@ -29,7 +29,7 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8)
     full_name: Optional[str] = Field(None)
     username: Optional[str] = Field(None)
-    country: Optional[str] = Field(None)
+    country: str = Field(..., min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$")
     city: Optional[str] = Field(None)
     currency: Optional[str] = Field("USD")
     timezone: Optional[str] = Field("UTC")

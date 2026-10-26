@@ -290,7 +290,20 @@ def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
         if 200 <= response.status_code < 300:
             logger.info("SendGrid accepted auth email status=%s", response.status_code)
             return True
-        logger.error("SendGrid rejected auth email status=%s", response.status_code)
+        response_hint = response.text.lower()
+        if response.status_code == 401:
+            failure_reason = "invalid_api_key"
+        elif response.status_code == 403 and any(
+            hint in response_hint for hint in ("sender", "from address", "verified")
+        ):
+            failure_reason = "sender_identity_not_verified"
+        elif response.status_code == 403:
+            failure_reason = "account_restricted_or_not_unlocked"
+        elif response.status_code == 429:
+            failure_reason = "provider_rate_limited"
+        else:
+            failure_reason = "provider_rejected_request"
+        logger.error("SendGrid rejected auth email status=%s reason=%s", response.status_code, failure_reason)
         return False
     except requests.RequestException:
         logger.exception("SendGrid auth email request failed")

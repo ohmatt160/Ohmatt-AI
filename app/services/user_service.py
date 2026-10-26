@@ -26,11 +26,9 @@ class UserService:
         if db.query(User).filter(func.lower(User.username) == username.lower()).first():
             username = f"{username}-{email.split('@')[1].split('.')[0]}"
 
-        country = None
-        if user_data.country_id and str(user_data.country_id).isdigit():
-            country = db.query(Country).filter(Country.id == int(user_data.country_id)).first()
-        if not country and user_data.country:
-            country = db.query(Country).filter(Country.code == user_data.country.upper()).first()
+        country = db.query(Country).filter(Country.code == user_data.country.upper()).first()
+        if not country:
+            raise HTTPException(status_code=422, detail="Select a supported country")
 
         language = None
         if user_data.language_id and str(user_data.language_id).isdigit():
@@ -39,14 +37,14 @@ class UserService:
             language_code = country.language if country else "en"
             language = db.query(Language).filter(Language.code == language_code).first()
 
-        currency = user_data.currency or (country.currency if country else "USD")
+        currency = country.currency or user_data.currency or "USD"
 
         user = User(
             username=username,
             email=email,
             country_id=country.id if country else None,
             language_id=language.id if language else None,
-            timezone=user_data.timezone or "UTC",
+            timezone=country.timezone or user_data.timezone or "UTC",
             preferences={
                 "currency": currency,
                 "date_format": "YYYY-MM-DD",
