@@ -8,6 +8,11 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
     two_factor_code: Optional[str] = Field(None, min_length=6, max_length=6)
 
+
+class LoginEmailResendRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
 class VerifyRequest(BaseModel):
     token: str
 

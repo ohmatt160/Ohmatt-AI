@@ -30,6 +30,7 @@ class RateLimitRule:
 RATE_LIMIT_RULES = [
     RateLimitRule("POST", "/api/v1/auth/login", 5, 60),
     RateLimitRule("POST", "/api/v1/auth/login/form", 5, 60),
+    RateLimitRule("POST", "/api/v1/auth/login/resend", 3, 60),
     RateLimitRule("POST", "/api/v1/auth/register", 3, 60),
     RateLimitRule("POST", "/api/v1/auth/verify", 5, 60),
     RateLimitRule("POST", "/api/v1/auth/password-reset/request", 3, 60),

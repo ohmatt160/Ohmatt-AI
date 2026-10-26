@@ -87,11 +87,17 @@ class UserService:
             return None
         if (user.preferences or {}).get("is_active", True) is False:
             return None
-        if user.email and user.email.lower() in settings.admin_emails and not user.is_admin:
-            user.is_admin = True
-            user.is_verified = True
-            db.commit()
-            db.refresh(user)
+        if user.email and user.email.lower() in settings.admin_emails:
+            changed = False
+            if not user.is_admin:
+                user.is_admin = True
+                changed = True
+            if not user.is_verified:
+                user.is_verified = True
+                changed = True
+            if changed:
+                db.commit()
+                db.refresh(user)
         return user
 
     @staticmethod

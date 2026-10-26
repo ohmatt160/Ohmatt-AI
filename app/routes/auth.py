@@ -29,6 +29,7 @@ from app.schemas.user import (
     ResetPasswordRequest,
     TwoFactorVerifyRequest,
     TwoFactorDisableRequest,
+    LoginEmailResendRequest,
 )
 from app.services.user_service import UserService
 from app.services.integration_outbox_service import enqueue_notification, should_route_to_ohmattos
@@ -138,30 +139,67 @@ def verify_login_challenge(db: Session, user: User, request: Request, code: Opti
         current_preferences = user.preferences or {}
         if has_active_2fa_challenge(current_preferences):
             raise HTTPException(status_code=428, detail="Two-factor code required")
-        challenge = issue_2fa_code(user)
-        challenge_expiry = int((user.preferences or {}).get("two_factor_expires_at") or 0)
-        delivered = deliver_auth_email(
-            db,
-            user,
-            purpose="login-two-factor",
-            subject="Your Ohmatt sign-in code",
-            body=f"Your sign-in code is {challenge}. It expires in 10 minutes.",
-            idempotency_key=f"user:{user.id}:login-2fa:{challenge_expiry}",
-        )
-        db.commit()
-        if not delivered:
-            preferences = dict(user.preferences or {})
-            preferences.pop("two_factor_code_hash", None)
-            preferences.pop("two_factor_expires_at", None)
-            user.preferences = preferences
-            db.commit()
-            logger.error("Login challenge delivery unavailable user_id=%s", user.id)
-            raise HTTPException(status_code=503, detail="Sign-in verification is temporarily unavailable")
+        send_login_challenge(db, user)
         raise HTTPException(status_code=428, detail="Two-factor code required")
     if not verify_2fa_code(user, code):
         db.commit()
         raise HTTPException(status_code=401, detail="Invalid credentials")
     db.commit()
+
+
+def login_challenge_required(db: Session, user: User, request: Request) -> bool:
+    has_prior_sessions = db.query(UserSession.id).filter(UserSession.user_id == user.id).first() is not None
+    new_device = (
+        settings.RISK_BASED_LOGIN_CHALLENGE_ENABLED
+        and (not has_prior_sessions or not is_known_device(db, user, request))
+    )
+    return bool((user.preferences or {}).get("two_factor_enabled") or new_device or user.is_admin)
+
+
+def _resend_cooldown_remaining(user: User, key: str, cooldown_seconds: int = 30) -> int:
+    try:
+        last_sent = float((user.preferences or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        last_sent = 0
+    return max(0, int(cooldown_seconds - (time.time() - last_sent))) if last_sent else 0
+
+
+def _store_resend_timestamp(user: User, key: str) -> None:
+    preferences = dict(user.preferences or {})
+    preferences[key] = time.time()
+    user.preferences = preferences
+
+
+def send_login_challenge(db: Session, user: User, *, enforce_cooldown: bool = False) -> None:
+    if enforce_cooldown:
+        wait_seconds = _resend_cooldown_remaining(user, "login_challenge_last_sent_at")
+        if wait_seconds:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Please wait {wait_seconds} seconds before requesting another sign-in code.",
+                headers={"Retry-After": str(wait_seconds)},
+            )
+    code = issue_2fa_code(user)
+    preferences = dict(user.preferences or {})
+    preferences["login_challenge_last_sent_at"] = time.time()
+    user.preferences = preferences
+    challenge_expiry = int(preferences.get("two_factor_expires_at") or 0)
+    # Security codes must use direct email delivery; enqueue acceptance is not proof
+    # that the recipient's mailbox has received the code.
+    delivered = send_plain_email(
+        user.email,
+        "Your Ohmatt sign-in code",
+        f"Your sign-in code is {code}. It expires in 10 minutes.",
+    )
+    db.commit()
+    if not delivered:
+        preferences = dict(user.preferences or {})
+        preferences.pop("two_factor_code_hash", None)
+        preferences.pop("two_factor_expires_at", None)
+        user.preferences = preferences
+        db.commit()
+        logger.error("Login challenge email delivery failed user_id=%s challenge_expiry=%s", user.id, challenge_expiry)
+        raise HTTPException(status_code=503, detail="Sign-in verification email could not be sent. Please try again later.")
 
 
 def revoke_current_session(db: Session, token: Optional[str], user_id: int) -> None:
@@ -213,6 +251,11 @@ def build_password_reset_url(token: str) -> str:
 
 def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
     if not settings.SENDGRID_API_KEY or not settings.SENDGRID_FROM_EMAIL:
+        logger.error(
+            "SendGrid auth email is not configured api_key_present=%s sender_present=%s",
+            bool(settings.SENDGRID_API_KEY),
+            bool(settings.SENDGRID_FROM_EMAIL),
+        )
         return False
 
     payload = {
@@ -244,8 +287,13 @@ def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
             headers=headers,
             timeout=10,
         )
-        return 200 <= response.status_code < 300
+        if 200 <= response.status_code < 300:
+            logger.info("SendGrid accepted auth email status=%s", response.status_code)
+            return True
+        logger.error("SendGrid rejected auth email status=%s", response.status_code)
+        return False
     except requests.RequestException:
+        logger.exception("SendGrid auth email request failed")
         return False
 
 
@@ -401,6 +449,42 @@ def login_user(data: LoginRequest, request: Request, response: Response, db: Ses
         description="User logged in",
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/login/resend")
+def resend_login_email(data: LoginEmailResendRequest, request: Request, db: Session = Depends(get_db)):
+    """Resend verification or sign-in email after revalidating the password."""
+    user = UserService.authenticate_user(db, data.username, data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not user.is_verified:
+        wait_seconds = _resend_cooldown_remaining(user, "verification_email_last_sent_at", 60)
+        if wait_seconds:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Please wait {wait_seconds} seconds before requesting another verification email.",
+                headers={"Retry-After": str(wait_seconds)},
+            )
+        token = generate_token(user.email)
+        verify_url = f"{settings.FRONTEND_URL.rstrip('/')}/verify?{urlencode({'token': token})}"
+        _store_resend_timestamp(user, "verification_email_last_sent_at")
+        delivered = send_plain_email(
+            user.email,
+            "Verify your Ohmatt account",
+            f"Verify your email here: {verify_url}",
+        )
+        db.commit()
+        if not delivered:
+            logger.error("Email verification delivery failed user_id=%s", user.id)
+            raise HTTPException(status_code=503, detail="Verification email could not be sent. Please try again later.")
+        return {"kind": "email_verification", "message": "Verification email sent. Check your inbox and spam folder."}
+
+    if not login_challenge_required(db, user, request):
+        raise HTTPException(status_code=400, detail="This account does not currently need a sign-in code")
+
+    send_login_challenge(db, user, enforce_cooldown=True)
+    return {"kind": "two_factor", "message": "A fresh sign-in code was sent. Check your inbox and spam folder."}
 
 @router.post("/login/form", response_model=Token, include_in_schema=False)
 def login_form(
