@@ -29,6 +29,7 @@ def test_every_documented_api_operation_handles_anonymous_request():
     app = create_app()
     app.dependency_overrides[get_db] = get_test_db
     paths = app.openapi()["paths"]
+    failures = []
     with TestClient(app, raise_server_exceptions=False) as client:
         for path, operations in paths.items():
             request_path = re.sub(r"\{[^}]+}", "1", path)
@@ -36,8 +37,7 @@ def test_every_documented_api_operation_handles_anonymous_request():
                 if method.upper() not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
                     continue
                 response = client.request(method.upper(), request_path)
-                assert response.status_code < 500, (
-                    f"{method.upper()} {path} raised an unhandled error: "
-                    f"{response.status_code} {response.text[:250]}"
-                )
+                if response.status_code >= 500:
+                    failures.append(f"{method.upper()} {path} returned {response.status_code}")
+    assert not failures, "Unhandled API route errors:\n" + "\n".join(failures)
     engine.dispose()
