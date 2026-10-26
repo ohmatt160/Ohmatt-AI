@@ -19,5 +19,10 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements_fastapi.txt
       - run: python -m pip install -r requirements_test.txt
-      - run: python -m pytest -q
+      - name: Run feature tests
+        run: python -m pytest -q --ignore=tests/test_api_route_smoke.py --ignore=tests/test_cors.py
+      - name: Verify credentialed CORS preflight
+        run: python -m pytest -q tests/test_cors.py
+      - name: Sweep documented API routes
+        run: python -m pytest -q tests/test_api_route_smoke.py
 
