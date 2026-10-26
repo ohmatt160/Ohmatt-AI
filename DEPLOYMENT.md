@@ -48,16 +48,19 @@ For a small beta, SQLite can work with Hugging Face persistent storage mounted a
 For staging and production, use separate managed Postgres databases. The application
 creates its required composite indexes idempotently during startup.
 
-Password reset, verification, and 2FA emails use `FRONTEND_URL` and SendGrid. Add these secrets on Hugging Face for real emails:
+Password reset, verification, and 2FA emails use `FRONTEND_URL` and Brevo. Add these secrets in the Hugging Face Space settings:
 
 ```env
-SENDGRID_API_KEY=replace-with-sendgrid-api-key
-SENDGRID_FROM_EMAIL=no-reply@example.com
-SENDGRID_FROM_NAME=Ohmatt
+BREVO_API_KEY=replace-with-brevo-api-key
+BREVO_FROM_EMAIL=no-reply@example.com
+BREVO_FROM_NAME=Ohmatt
 EMAIL_TOKEN_EXPIRATION=86400
+EMAIL_VERIFICATION_REQUIRED=true
 ```
 
-`SENDGRID_FROM_EMAIL` must be a verified sender in SendGrid. For a closed beta without email delivery, you can temporarily set `PASSWORD_RESET_LINK_RESPONSE_ENABLED=true`; the API will return the reset link to the frontend after the user requests it. Turn it off before a public launch.
+`BREVO_FROM_EMAIL` must be a verified sender in Brevo. When `BREVO_API_KEY` is set, the app uses Brevo for auth emails; a Brevo delivery failure is reported instead of silently falling back to another provider. SendGrid settings remain supported when Brevo is not configured. For a closed beta without email delivery, you can temporarily set `PASSWORD_RESET_LINK_RESPONSE_ENABLED=true`; the API will return the reset link to the frontend after the user requests it. Turn it off before a public launch.
+
+If email verification must be paused temporarily, set `EMAIL_VERIFICATION_REQUIRED=false` in the Hugging Face Space secrets. New accounts will be marked verified and registration will not send a verification email. This does not disable login 2FA or risk-based sign-in codes; those remain separate protections and still require working email delivery. Restore `true` after the email provider is ready.
 
 Health check:
 

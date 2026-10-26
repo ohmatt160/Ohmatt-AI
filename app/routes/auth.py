@@ -133,7 +133,7 @@ def verify_login_challenge(db: Session, user: User, request: Request, code: Opti
     needs_challenge = bool(preferences.get("two_factor_enabled") or new_device or user.is_admin)
     if not needs_challenge:
         return
-    if not user.is_verified:
+    if not user.is_verified and settings.EMAIL_VERIFICATION_REQUIRED:
         raise HTTPException(status_code=403, detail="Verify your email before completing sign-in verification")
     if not code:
         current_preferences = user.preferences or {}
@@ -315,6 +315,39 @@ def send_sendgrid_email(email: str, subject: str, body: str) -> bool:
         return False
 
 
+def send_brevo_email(email: str, subject: str, body: str) -> bool:
+    if not settings.BREVO_API_KEY or not settings.BREVO_FROM_EMAIL:
+        logger.error(
+            "Brevo auth email is not configured api_key_present=%s sender_present=%s",
+            bool(settings.BREVO_API_KEY),
+            bool(settings.BREVO_FROM_EMAIL),
+        )
+        return False
+
+    payload = {
+        "sender": {"email": settings.BREVO_FROM_EMAIL, "name": settings.BREVO_FROM_NAME},
+        "to": [{"email": email}],
+        "subject": subject,
+        "textContent": body,
+    }
+    try:
+        response = requests.post(
+            settings.BREVO_API_URL,
+            json=payload,
+            headers={"api-key": settings.BREVO_API_KEY, "Content-Type": "application/json"},
+            timeout=10,
+        )
+        if 200 <= response.status_code < 300:
+            logger.info("Brevo accepted auth email status=%s", response.status_code)
+            return True
+        # Do not log provider response bodies: they may contain recipient or account details.
+        logger.error("Brevo rejected auth email status=%s", response.status_code)
+        return False
+    except requests.RequestException:
+        logger.exception("Brevo auth email request failed")
+        return False
+
+
 def send_smtp_email(email: str, subject: str, body: str) -> bool:
     if not settings.MAIL_SERVER or not settings.MAIL_USERNAME or not settings.MAIL_PASSWORD:
         return False
@@ -339,6 +372,8 @@ def send_smtp_email(email: str, subject: str, body: str) -> bool:
 
 
 def send_plain_email(email: str, subject: str, body: str) -> bool:
+    if settings.BREVO_API_KEY:
+        return send_brevo_email(email, subject, body)
     if send_sendgrid_email(email, subject, body):
         return True
     if not settings.is_production:
@@ -411,30 +446,31 @@ def register_user(
 ):
     validate_password_strength(user.password)
     created_user = UserService.create_user(db, user, commit=False)
-    token = generate_token(created_user.email)
-    verify_url = f"{settings.FRONTEND_URL.rstrip()}/verify?{urlencode({'token': token})}"
-    verification_subject = "Verify your Ohmatt account"
-    verification_body = f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}"
-    if should_route_to_ohmattos(user_id=created_user.id, email=created_user.email):
-        enqueue_notification(
-            db,
-            user_id=created_user.id,
-            purpose="email-verification",
-            channel_type="email",
-            content={
-                "to": created_user.email,
-                "subject": verification_subject,
-                "body": verification_body,
-            },
-            idempotency_key=f"user:{created_user.id}:email-verification:registration",
-        )
-    else:
-        background_tasks.add_task(
-            send_plain_email,
-            created_user.email,
-            verification_subject,
-            verification_body,
-        )
+    if settings.EMAIL_VERIFICATION_REQUIRED:
+        token = generate_token(created_user.email)
+        verify_url = f"{settings.FRONTEND_URL.rstrip()}/verify?{urlencode({'token': token})}"
+        verification_subject = "Verify your Ohmatt account"
+        verification_body = f"Welcome to Ohmatt.\n\nVerify your email here: {verify_url}"
+        if should_route_to_ohmattos(user_id=created_user.id, email=created_user.email):
+            enqueue_notification(
+                db,
+                user_id=created_user.id,
+                purpose="email-verification",
+                channel_type="email",
+                content={
+                    "to": created_user.email,
+                    "subject": verification_subject,
+                    "body": verification_body,
+                },
+                idempotency_key=f"user:{created_user.id}:email-verification:registration",
+            )
+        else:
+            background_tasks.add_task(
+                send_plain_email,
+                created_user.email,
+                verification_subject,
+                verification_body,
+            )
     log_activity(db,
         request,
         created_user.id,
@@ -476,7 +512,7 @@ def resend_login_email(data: LoginEmailResendRequest, request: Request, db: Sess
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not user.is_verified:
+    if not user.is_verified and settings.EMAIL_VERIFICATION_REQUIRED:
         wait_seconds = _resend_cooldown_remaining(user, "verification_email_last_sent_at", 60)
         if wait_seconds:
             raise HTTPException(

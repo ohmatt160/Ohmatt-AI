@@ -54,7 +54,7 @@ class UserService:
                 "two_factor_enabled": False,
             },
             is_admin=email in settings.admin_emails,
-            is_verified=email in settings.admin_emails,
+            is_verified=(email in settings.admin_emails) or not settings.EMAIL_VERIFICATION_REQUIRED,
         )
         user.set_password(user_data.password)
         try:

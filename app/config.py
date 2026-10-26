@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE_SECONDS: int = Field(default=1800, env="DB_POOL_RECYCLE_SECONDS")
     
     # Email settings
+    BREVO_API_KEY: str = Field(default="", env="BREVO_API_KEY")
+    BREVO_FROM_EMAIL: str = Field(default="", env="BREVO_FROM_EMAIL")
+    BREVO_FROM_NAME: str = Field(default="Ohmatt", env="BREVO_FROM_NAME")
+    BREVO_API_URL: str = Field(default="https://api.brevo.com/v3/smtp/email", env="BREVO_API_URL")
+    EMAIL_VERIFICATION_REQUIRED: bool = Field(default=True, env="EMAIL_VERIFICATION_REQUIRED")
     SENDGRID_API_KEY: str = Field(default="", env="SENDGRID_API_KEY")
     SENDGRID_FROM_EMAIL: str = Field(default="", env="SENDGRID_FROM_EMAIL")
     SENDGRID_FROM_NAME: str = Field(default="Ohmatt", env="SENDGRID_FROM_NAME")

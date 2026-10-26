@@ -6,6 +6,7 @@ from app.schemas.user import ProfileUpdate, UserCreate
 from app.models.country import Country
 from app.models.language import Language
 from app.services.user_service import UserService
+from app.config import settings
 
 
 def test_profile_country_accepts_iso_code():
@@ -94,3 +95,9 @@ def test_registration_uses_country_currency_and_timezone(monkeypatch):
     assert created.country_id == 10
     assert created.timezone == "Africa/Lagos"
     assert created.preferences["currency"] == "NGN"
+    assert created.is_verified is False
+
+    monkeypatch.setattr(settings, "EMAIL_VERIFICATION_REQUIRED", False)
+    registration.email = "second@example.com"
+    created_without_verification = UserService.create_user(Database(), registration)
+    assert created_without_verification.is_verified is True
