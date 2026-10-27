@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_REDIS_URL: str = Field(default="", env="RATE_LIMIT_REDIS_URL")
     ADMIN_EMAILS: str = Field(default="", env="ADMIN_EMAILS")
     BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_EMAIL")
+    BOOTSTRAP_ADMIN_PREVIOUS_EMAIL: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PREVIOUS_EMAIL")
     BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None, env="BOOTSTRAP_ADMIN_PASSWORD")
     
     # Database

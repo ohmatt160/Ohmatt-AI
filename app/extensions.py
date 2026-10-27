@@ -161,6 +161,14 @@ def bootstrap_admin_user():
     email = settings.BOOTSTRAP_ADMIN_EMAIL.strip().lower()
     username = email.split("@")[0]
     user = db_session.query(User).filter(User.email == email).first()
+    migrated_email = False
+
+    previous_email = (settings.BOOTSTRAP_ADMIN_PREVIOUS_EMAIL or "").strip().lower()
+    if not user and previous_email and previous_email != email:
+        user = db_session.query(User).filter(User.email == previous_email).first()
+        if user:
+            user.email = email
+            migrated_email = True
 
     if not user:
         user = User(
@@ -184,14 +192,15 @@ def bootstrap_admin_user():
         print(f"[OK] Bootstrap admin created: {email}")
         return
 
-    changed = False
+    changed = migrated_email
     if not user.is_admin:
         user.is_admin = True
         changed = True
     if not user.is_verified:
         user.is_verified = True
         changed = True
-    if settings.BOOTSTRAP_ADMIN_PASSWORD:
+    # Preserve the existing password hash during an email-only migration.
+    if settings.BOOTSTRAP_ADMIN_PASSWORD and not migrated_email:
         user.set_password(settings.BOOTSTRAP_ADMIN_PASSWORD)
         changed = True
     if changed:

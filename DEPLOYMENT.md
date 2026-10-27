@@ -28,6 +28,7 @@ DB_POOL_TIMEOUT_SECONDS=30
 DB_POOL_RECYCLE_SECONDS=1800
 ADMIN_EMAILS=admin@example.com
 BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PREVIOUS_EMAIL=
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-temporary-password
 BACKEND_CORS_ORIGINS=https://your-vercel-app.vercel.app
 FRONTEND_URL=https://your-vercel-app.vercel.app
@@ -42,7 +43,7 @@ NVIDIA_API_KEY=
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 ```
 
-On the first production boot, `BOOTSTRAP_ADMIN_EMAIL` creates or promotes that account to admin and sets its password. After you confirm login works, rotate/remove `BOOTSTRAP_ADMIN_PASSWORD` if you do not want startup to keep resetting that password.
+On the first production boot, `BOOTSTRAP_ADMIN_EMAIL` creates or promotes that account to admin and sets its password. To rename an existing bootstrap admin without changing their password, set `BOOTSTRAP_ADMIN_PREVIOUS_EMAIL` to the current address for one restart; the account email is updated and its password hash is preserved. Remove `BOOTSTRAP_ADMIN_PREVIOUS_EMAIL` after that restart. `BOOTSTRAP_ADMIN_PASSWORD` remains needed for bootstrap account creation and continues to reset the password when the target account already exists.
 
 For a small beta, SQLite can work with Hugging Face persistent storage mounted at `/data`.
 For staging and production, use separate managed Postgres databases. The application
