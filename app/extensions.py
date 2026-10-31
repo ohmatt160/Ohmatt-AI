@@ -160,15 +160,30 @@ def bootstrap_admin_user():
 
     email = settings.BOOTSTRAP_ADMIN_EMAIL.strip().lower()
     username = email.split("@")[0]
-    user = db_session.query(User).filter(User.email == email).first()
+    target_user = db_session.query(User).filter(User.email == email).first()
     migrated_email = False
 
     previous_email = (settings.BOOTSTRAP_ADMIN_PREVIOUS_EMAIL or "").strip().lower()
-    if not user and previous_email and previous_email != email:
-        user = db_session.query(User).filter(User.email == previous_email).first()
-        if user:
-            user.email = email
-            migrated_email = True
+    previous_user = None
+    if previous_email and previous_email != email:
+        previous_user = db_session.query(User).filter(User.email == previous_email).first()
+
+    user = previous_user or target_user
+    if previous_user and target_user and previous_user.id != target_user.id:
+        # A prior restart may already have created the new bootstrap account.
+        # Keep its row/data but move it off the desired address and disable it,
+        # so the original account can retain its data and password hash.
+        target_user.email = f"inactive-admin-migration-{target_user.id}@invalid.local"
+        target_preferences = dict(target_user.preferences or {})
+        target_preferences["is_active"] = False
+        target_user.preferences = target_preferences
+        target_user.is_admin = False
+        target_user.is_verified = False
+        db_session.flush()
+
+    if previous_user and previous_user.email != email:
+        previous_user.email = email
+        migrated_email = True
 
     if not user:
         user = User(
